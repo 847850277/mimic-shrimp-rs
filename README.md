@@ -115,8 +115,22 @@ curl -s http://127.0.0.1:7878/tools/invoke \
     "args": {
       "limit": 10
     }
-  }'
+ }'
 ```
+
+独立的回溯调用最小示例：
+
+```bash
+cargo run --example backtracking_call
+```
+
+这个示例放在 `examples/backtracking_call.rs`，不会影响现有 HTTP 服务结构。
+它演示的是：
+
+- 上层是回溯搜索器，默认加载 3 个可扩展的思考方向。
+- 下层每个思考方向内部仍然是线性的 tool loop。
+- 每个分支都在独立 sandbox 里执行，失败就回滚，成功才提交副作用。
+- 执行反馈会触发 `success` / `dead_end` / `pruned` 三种结果，用来剪枝和切换分支。
 
 ## 代码结构
 
