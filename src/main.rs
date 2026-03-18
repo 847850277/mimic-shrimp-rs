@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     let llm = build_llm(&config.llm)?;
     let session_store = SessionStore::default();
-    let registry = build_builtin_registry(session_store.clone())?;
+    let registry = build_builtin_registry(session_store.clone(), config.exec_command_tool.clone())?;
     let engine = Arc::new(ToolCallEngine::new(
         config.app_name.clone(),
         llm,
@@ -51,6 +51,8 @@ async fn main() -> Result<()> {
         feishu_app_id_configured = config.feishu_callback.app_id.is_some(),
         feishu_app_secret_configured = config.feishu_callback.app_secret.is_some(),
         feishu_require_mention = config.feishu_callback.require_mention,
+        exec_command_tool_enabled = config.exec_command_tool.enabled,
+        exec_command_tool_shell = %config.exec_command_tool.shell,
         "loaded feishu integration config"
     );
     if config.feishu_callback.app_id.is_none() || config.feishu_callback.app_secret.is_none() {

@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub max_iterations: usize,
     pub llm: LlmConfig,
     pub feishu_callback: FeishuCallbackConfig,
+    pub exec_command_tool: ExecCommandToolConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,14 @@ pub struct FeishuCallbackConfig {
     pub app_secret: Option<String>,
     pub open_base_url: String,
     pub require_mention: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecCommandToolConfig {
+    pub enabled: bool,
+    pub shell: String,
+    pub timeout_secs: u64,
+    pub max_output_chars: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +94,20 @@ impl AppConfig {
                 require_mention: parse_bool_env("FEISHU_BOT_REQUIRE_MENTION", true)
                     .with_context(|| {
                         "invalid FEISHU_BOT_REQUIRE_MENTION, expected true/false".to_string()
+                    })?,
+            },
+            exec_command_tool: ExecCommandToolConfig {
+                enabled: parse_bool_env("EXEC_COMMAND_TOOL_ENABLED", false).with_context(|| {
+                    "invalid EXEC_COMMAND_TOOL_ENABLED, expected true/false".to_string()
+                })?,
+                shell: std::env::var("EXEC_COMMAND_TOOL_SHELL")
+                    .unwrap_or_else(|_| "/bin/sh".to_string()),
+                timeout_secs: parse_u64_env("EXEC_COMMAND_TOOL_TIMEOUT_SECS", 20).with_context(
+                    || "invalid EXEC_COMMAND_TOOL_TIMEOUT_SECS, expected integer".to_string(),
+                )?,
+                max_output_chars: parse_usize_env("EXEC_COMMAND_TOOL_MAX_OUTPUT_CHARS", 4000)
+                    .with_context(|| {
+                        "invalid EXEC_COMMAND_TOOL_MAX_OUTPUT_CHARS, expected integer".to_string()
                     })?,
             },
         })
@@ -175,6 +198,24 @@ fn parse_bool_env(key: &str, default: bool) -> Result<bool> {
             "0" | "false" | "no" | "off" => Ok(false),
             _ => Err(anyhow!("unsupported boolean value: {raw}")),
         },
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_u64_env(key: &str, default: u64) -> Result<u64> {
+    match std::env::var(key) {
+        Ok(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| anyhow!("unsupported integer value: {raw}")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_usize_env(key: &str, default: usize) -> Result<usize> {
+    match std::env::var(key) {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| anyhow!("unsupported integer value: {raw}")),
         Err(_) => Ok(default),
     }
 }

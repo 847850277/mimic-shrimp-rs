@@ -902,7 +902,9 @@ mod tests {
     use adk_rust::{Content, Llm, LlmRequest, LlmResponse, LlmResponseStream, Part, async_trait};
 
     use super::*;
-    use crate::{session_store::SessionStore, tools::build_builtin_registry};
+    use crate::{
+        config::ExecCommandToolConfig, session_store::SessionStore, tools::build_builtin_registry,
+    };
 
     struct ScriptedLlm {
         responses: Mutex<VecDeque<LlmResponse>>,
@@ -938,6 +940,15 @@ mod tests {
         }
     }
 
+    fn disabled_exec_tool() -> ExecCommandToolConfig {
+        ExecCommandToolConfig {
+            enabled: false,
+            shell: "/bin/sh".to_string(),
+            timeout_secs: 20,
+            max_output_chars: 4000,
+        }
+    }
+
     #[tokio::test]
     async fn executes_iterative_plan_execute_loop_and_persists_turn() {
         let llm = ScriptedLlm::new(vec![
@@ -962,7 +973,8 @@ mod tests {
             LlmResponse::new(Content::new("model").with_text("2 + 3 = 5")),
         ]);
         let store = SessionStore::default();
-        let registry = build_builtin_registry(store.clone()).expect("registry");
+        let registry =
+            build_builtin_registry(store.clone(), disabled_exec_tool()).expect("registry");
         let engine = ToolCallEngine::new(
             "test-app".to_string(),
             Arc::new(llm),
@@ -1026,7 +1038,8 @@ mod tests {
             LlmResponse::new(Content::new("model").with_text("done")),
         ]);
         let store = SessionStore::default();
-        let registry = build_builtin_registry(store.clone()).expect("registry");
+        let registry =
+            build_builtin_registry(store.clone(), disabled_exec_tool()).expect("registry");
         let engine = ToolCallEngine::new(
             "test-app".to_string(),
             Arc::new(llm),
@@ -1085,7 +1098,8 @@ mod tests {
             error_message: None,
         }]);
         let store = SessionStore::default();
-        let registry = build_builtin_registry(store.clone()).expect("registry");
+        let registry =
+            build_builtin_registry(store.clone(), disabled_exec_tool()).expect("registry");
         let engine = ToolCallEngine::new(
             "test-app".to_string(),
             Arc::new(llm),

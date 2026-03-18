@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    process::Stdio,
     sync::{Arc, Mutex},
 };
 
@@ -12,8 +13,12 @@ use adk_rust::{
 use anyhow::{Result, anyhow, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio::{process::Command, time::timeout};
 
-use crate::session_store::{MessageView, SessionStore, SessionSummary};
+use crate::{
+    config::ExecCommandToolConfig,
+    session_store::{MessageView, SessionStore, SessionSummary},
+};
 
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
@@ -98,6 +103,30 @@ struct TimeNowResult {
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 struct EmptyArgs {}
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ExecCommandArgs {
+    cmd: String,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    max_output_chars: Option<usize>,
+    #[serde(default)]
+    shell: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ExecCommandResult {
+    success: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+    command: String,
+    workdir: Option<String>,
+}
+
 impl ToolRegistry {
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Result<Self> {
         let mut map = HashMap::new();
@@ -172,7 +201,10 @@ impl ToolRegistry {
     }
 }
 
-pub fn build_builtin_registry(session_store: SessionStore) -> Result<ToolRegistry> {
+pub fn build_builtin_registry(
+    session_store: SessionStore,
+    exec_command_config: ExecCommandToolConfig,
+) -> Result<ToolRegistry> {
     let list_store = session_store.clone();
     let history_store = session_store.clone();
 
@@ -250,13 +282,117 @@ pub fn build_builtin_registry(session_store: SessionStore) -> Result<ToolRegistr
         .with_response_schema::<TimeNowResult>(),
     ) as Arc<dyn Tool>;
 
-    ToolRegistry::new(vec![sessions_list, sessions_history, math_add, time_now])
+    let mut tools = vec![sessions_list, sessions_history, math_add, time_now];
+
+    if exec_command_config.enabled {
+        let exec_command = Arc::new(
+            FunctionTool::new(
+                "exec_command",
+                "Execute a shell command on the current server and return its exit code plus captured stdout/stderr.",
+                move |_ctx, args| {
+                    let config = exec_command_config.clone();
+                    async move {
+                        let input: ExecCommandArgs = serde_json::from_value(args)?;
+                        let result = run_exec_command(input, &config)
+                            .await
+                            .map_err(|error| AdkError::Tool(error.to_string()))?;
+                        Ok(serde_json::to_value(result)?)
+                    }
+                },
+            )
+            .with_parameters_schema::<ExecCommandArgs>()
+            .with_response_schema::<ExecCommandResult>(),
+        ) as Arc<dyn Tool>;
+        tools.push(exec_command);
+    }
+
+    ToolRegistry::new(tools)
+}
+
+async fn run_exec_command(
+    input: ExecCommandArgs,
+    config: &ExecCommandToolConfig,
+) -> Result<ExecCommandResult> {
+    let cmd = input.cmd.trim();
+    if cmd.is_empty() {
+        bail!("cmd must not be empty");
+    }
+
+    let shell = input
+        .shell
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(config.shell.as_str());
+    let timeout_secs = input
+        .timeout_secs
+        .unwrap_or(config.timeout_secs)
+        .clamp(1, 120);
+    let max_output_chars = input
+        .max_output_chars
+        .unwrap_or(config.max_output_chars)
+        .clamp(128, 20_000);
+
+    let mut command = Command::new(shell);
+    command
+        .arg("-lc")
+        .arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if let Some(workdir) = input
+        .workdir
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        command.current_dir(workdir);
+    }
+
+    let child = command.spawn()?;
+    let output = match timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Ok(ExecCommandResult {
+                success: false,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: format!("command timed out after {timeout_secs}s"),
+                timed_out: true,
+                command: cmd.to_string(),
+                workdir: input.workdir,
+            });
+        }
+    };
+
+    Ok(ExecCommandResult {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: truncate_output(&String::from_utf8_lossy(&output.stdout), max_output_chars),
+        stderr: truncate_output(&String::from_utf8_lossy(&output.stderr), max_output_chars),
+        timed_out: false,
+        command: cmd.to_string(),
+        workdir: input.workdir,
+    })
 }
 
 fn format_unix_ms(unix_ms: u64) -> String {
     let seconds = unix_ms / 1_000;
     let millis = unix_ms % 1_000;
     format!("{seconds}.{millis:03}Z")
+}
+
+fn truncate_output(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.trim().chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push_str("...");
+    }
+    truncated
 }
 
 struct RequestToolContext {
@@ -344,5 +480,41 @@ impl ToolContext for RequestToolContext {
         _query: &str,
     ) -> std::result::Result<Vec<adk_rust::MemoryEntry>, AdkError> {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn exec_command_runs_and_captures_output() {
+        let result = run_exec_command(
+            ExecCommandArgs {
+                cmd: "printf 'hello'".to_string(),
+                workdir: None,
+                timeout_secs: Some(5),
+                max_output_chars: Some(100),
+                shell: Some("/bin/sh".to_string()),
+            },
+            &ExecCommandToolConfig {
+                enabled: true,
+                shell: "/bin/sh".to_string(),
+                timeout_secs: 20,
+                max_output_chars: 4000,
+            },
+        )
+        .await
+        .expect("command should succeed");
+
+        assert!(result.success);
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout, "hello");
+    }
+
+    #[test]
+    fn truncate_output_limits_text() {
+        assert_eq!(truncate_output("abcdef", 4), "abcd...");
+        assert_eq!(truncate_output("abc", 4), "abc");
     }
 }

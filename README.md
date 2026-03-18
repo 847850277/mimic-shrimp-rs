@@ -38,6 +38,7 @@ HTTP 层使用 [salvo](https://github.com/salvo-rs/salvo)，LLM 集成使用 [ad
 - `sessions_history`
 - `math_add`
 - `time_now`
+- `exec_command`（可选，需要 `EXEC_COMMAND_TOOL_ENABLED=true`）
 
 ## 运行
 
@@ -145,6 +146,7 @@ docker push your-registry/rs-tool-call:latest
 - 如果你要让机器人在群里收到文本并自动回复，还需要配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`。
 - 飞书后台除了“回调配置”，还要在“事件配置”里订阅 `im.message.receive_v1`，并在权限管理里开通接收/回复消息相关权限。
 - 默认 `FEISHU_BOT_REQUIRE_MENTION=true`，群聊里只有显式 `@机器人` 的文本消息才会触发回复；点对点聊天不受这个限制。
+- 如果你要让模型能在服务器上执行 shell 命令，需要显式开启 `EXEC_COMMAND_TOOL_ENABLED=true`；默认关闭。
 
 ## 请求示例
 
