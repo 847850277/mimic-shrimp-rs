@@ -518,7 +518,7 @@ impl ToolCallEngine {
             let response = item?;
             saw_chunk = true;
             if let Some(content) = response.content {
-                all_parts.extend(content.parts);
+                append_stream_parts(&mut all_parts, content.parts);
             }
             if usage_metadata.is_none() {
                 usage_metadata = response.usage_metadata;
@@ -846,8 +846,23 @@ fn extract_text(content: &Content) -> String {
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("");
     text.trim().to_string()
+}
+
+fn append_stream_parts(target: &mut Vec<Part>, incoming: Vec<Part>) {
+    for part in incoming {
+        match part {
+            Part::Text { text } => {
+                if let Some(Part::Text { text: current }) = target.last_mut() {
+                    current.push_str(&text);
+                } else {
+                    target.push(Part::Text { text });
+                }
+            }
+            other => target.push(other),
+        }
+    }
 }
 
 fn finish_reason_to_string(reason: &FinishReason) -> String {
@@ -1041,6 +1056,58 @@ mod tests {
                 .preview
                 .contains("time_now")
         );
+    }
+
+    #[tokio::test]
+    async fn merges_streamed_text_parts_without_inserting_newlines() {
+        let llm = ScriptedLlm::new(vec![LlmResponse {
+            content: Some(Content {
+                role: "model".to_string(),
+                parts: vec![
+                    Part::Text {
+                        text: "根据".to_string(),
+                    },
+                    Part::Text {
+                        text: "会话历史".to_string(),
+                    },
+                    Part::Text {
+                        text: "，我看到 1 条记录。".to_string(),
+                    },
+                ],
+            }),
+            usage_metadata: None,
+            finish_reason: Some(FinishReason::Stop),
+            citation_metadata: None,
+            partial: false,
+            turn_complete: true,
+            interrupted: false,
+            error_code: None,
+            error_message: None,
+        }]);
+        let store = SessionStore::default();
+        let registry = build_builtin_registry(store.clone()).expect("registry");
+        let engine = ToolCallEngine::new(
+            "test-app".to_string(),
+            Arc::new(llm),
+            registry,
+            store,
+            "use tools".to_string(),
+            4,
+        );
+
+        let response = engine
+            .run_turn(ChatTurnRequest {
+                session_id: "main".to_string(),
+                user_id: "tester".to_string(),
+                message: "show history".to_string(),
+                system_prompt: None,
+                max_iterations: None,
+                persist: false,
+            })
+            .await
+            .expect("chat response");
+
+        assert_eq!(response.answer, "根据会话历史，我看到 1 条记录。");
     }
 
     #[test]

@@ -52,9 +52,10 @@ impl FeishuBotClient {
     }
 
     pub async fn reply_text(&self, message_id: &str, text: &str) -> Result<()> {
+        let formatted = format_reply_text_for_feishu(text);
         info!(
             message_id = %message_id,
-            reply_preview = %preview_text(text, 160),
+            reply_preview = %preview_text(&formatted, 160),
             "requesting feishu tenant access token before replying"
         );
         let token = self.tenant_access_token().await?;
@@ -64,14 +65,14 @@ impl FeishuBotClient {
         );
         info!(
             message_id = %message_id,
-            reply_preview = %preview_text(text, 160),
+            reply_preview = %preview_text(&formatted, 160),
             "calling feishu reply api"
         );
         let response = self
             .http
             .post(url)
             .bearer_auth(token)
-            .json(&build_reply_request(text))
+            .json(&build_reply_request(&formatted))
             .send()
             .await?;
         let status = response.status();
@@ -280,6 +281,35 @@ fn build_reply_request(text: &str) -> Value {
     })
 }
 
+fn format_reply_text_for_feishu(input: &str) -> String {
+    let mut text = input.replace("\r\n", "\n");
+    text = text.replace("**", "");
+    text = text.replace("__", "");
+    text = text
+        .lines()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut normalized = Vec::new();
+    let mut previous_blank = false;
+    for line in text.lines() {
+        let blank = line.trim().is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        normalized.push(line.trim_start().to_string());
+        previous_blank = blank;
+    }
+
+    let text = normalized.join("\n").trim().to_string();
+    if text.is_empty() {
+        "我暂时没有可发送的回复。".to_string()
+    } else {
+        text
+    }
+}
+
 fn preview_text(input: &str, limit: usize) -> String {
     let mut preview = input.trim().replace('\n', "\\n");
     if preview.chars().count() > limit {
@@ -430,6 +460,14 @@ mod tests {
                 "content": "{\"text\":\"hello\"}",
                 "msg_type": "text"
             })
+        );
+    }
+
+    #[test]
+    fn formats_reply_text_for_feishu_as_plain_text() {
+        assert_eq!(
+            format_reply_text_for_feishu("**会话历史**\n\n\n- 第一条\n- 第二条\n"),
+            "会话历史\n\n- 第一条\n- 第二条"
         );
     }
 }
