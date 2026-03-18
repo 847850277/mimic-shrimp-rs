@@ -115,6 +115,14 @@ docker run -d \
   rs-tool-call:latest
 ```
 
+一键更新部署：
+
+```bash
+bash scripts/deploy.sh
+```
+
+这个脚本会按当前分支执行 `git pull --ff-only`、重新构建镜像，并替换当前运行中的 `rs-tool-call` 容器；默认读取项目根目录下的 `.env`。
+
 如果你要推到镜像仓库：
 
 ```bash
