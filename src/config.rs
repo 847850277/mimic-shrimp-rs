@@ -61,7 +61,7 @@ impl AppConfig {
             Ok(raw) => raw
                 .parse::<usize>()
                 .with_context(|| format!("invalid MAX_TOOL_ITERATIONS: {raw}"))?,
-            Err(_) => 8,
+            Err(_) => 12,
         };
         if max_iterations == 0 {
             bail!("MAX_TOOL_ITERATIONS must be greater than 0");

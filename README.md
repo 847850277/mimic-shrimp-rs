@@ -39,6 +39,7 @@ HTTP 层使用 [salvo](https://github.com/salvo-rs/salvo)，LLM 集成使用 [ad
 - `math_add`
 - `time_now`
 - `exec_command`（可选，需要 `EXEC_COMMAND_TOOL_ENABLED=true`）
+  - 对连续 shell 调用加了收敛保护：拿到可用结果后优先直接回答，不再无限探测环境。
 
 ## 运行
 
