@@ -229,7 +229,12 @@ pub fn parse_message_event(
         .pointer("/event/message/content")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing /event/message/content"))?;
-    let text = parse_text_message_content(content_raw)?;
+    let text = parse_text_message_content(
+        content_raw,
+        payload
+            .pointer("/event/message/mentions")
+            .and_then(Value::as_array),
+    )?;
     let session_seed = chat_id.clone().unwrap_or_else(|| message_id.clone());
 
     Ok(FeishuMessageEventParseOutcome::Text(
@@ -245,15 +250,23 @@ pub fn parse_message_event(
     ))
 }
 
-fn parse_text_message_content(content_raw: &str) -> Result<String> {
+fn parse_text_message_content(content_raw: &str, mentions: Option<&Vec<Value>>) -> Result<String> {
     let content: Value = serde_json::from_str(content_raw)
         .map_err(|error| anyhow!("invalid feishu text message content JSON: {error}"))?;
-    let text = content
+    let mut text = content
         .get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing text field in feishu message content"))?
         .trim()
         .to_string();
+    if let Some(mentions) = mentions {
+        for mention in mentions {
+            if let Some(key) = mention.get("key").and_then(Value::as_str) {
+                text = text.replace(key, " ");
+            }
+        }
+    }
+    text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() {
         bail!("feishu text message content is empty");
     }
@@ -299,7 +312,7 @@ mod tests {
                     "message_id": "om_123",
                     "chat_id": "oc_456",
                     "chat_type": "group",
-                    "message_type": "text",
+                "message_type": "text",
                     "mentions": [
                         { "key": "@_user_1" }
                     ],
@@ -323,6 +336,49 @@ mod tests {
                 assert_eq!(event.user_id, "ou_xxx");
                 assert_eq!(event.session_id, "feishu:oc_456");
                 assert_eq!(event.text, "@bot 你是谁");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strips_feishu_mention_keys_from_text() {
+        let payload = json!({
+            "header": {
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_xxx"
+                    },
+                    "sender_type": "user"
+                },
+                "message": {
+                    "message_id": "om_123",
+                    "chat_id": "oc_456",
+                    "chat_type": "group",
+                    "message_type": "text",
+                    "mentions": [
+                        { "key": "@_user_1" }
+                    ],
+                    "content": "{\"text\":\"@_user_1 我是谁\"}"
+                }
+            }
+        });
+
+        let event = parse_message_event(
+            &payload,
+            &FeishuCallbackConfig {
+                require_mention: true,
+                ..FeishuCallbackConfig::default()
+            },
+        )
+        .expect("parse should succeed");
+
+        match event {
+            FeishuMessageEventParseOutcome::Text(event) => {
+                assert_eq!(event.text, "我是谁");
             }
             other => panic!("unexpected outcome: {other:?}"),
         }

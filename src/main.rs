@@ -53,6 +53,11 @@ async fn main() -> Result<()> {
         feishu_require_mention = config.feishu_callback.require_mention,
         "loaded feishu integration config"
     );
+    if config.feishu_callback.app_id.is_none() || config.feishu_callback.app_secret.is_none() {
+        tracing::warn!(
+            "feishu message reply is disabled because FEISHU_APP_ID or FEISHU_APP_SECRET is missing"
+        );
+    }
 
     run_http(Arc::new(AppState { config, engine })).await
 }
