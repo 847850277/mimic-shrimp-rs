@@ -3,18 +3,26 @@
 一个用 Rust 初始化的最小项目，目标是把 OpenClaw 的 tool call 核心链路落成一个清晰、可扩展的服务骨架：
 
 1. 把工具注册成统一 schema。
-2. 把 schema 传给 LLM。
-3. 解析模型返回的 function/tool call。
-4. 执行本地工具。
-5. 把 tool result 重新喂回模型，直到得到最终回答。
+2. 让 LLM 每轮只规划下一步 action，而不是整条长链。
+3. 从最多 3 个候选方向里选一个可提交 action。
+4. 执行这一步并观察结果。
+5. 把 observation 回写到 transcript，再继续 re-plan，直到得到最终回答。
 
 HTTP 层使用 [salvo](https://github.com/salvo-rs/salvo)，LLM 集成使用 [adk-rust](https://github.com/zavora-ai/adk-rust)。
 
 ## 当前实现
 
 - `POST /chat`
-  - 走完整的 OpenClaw 风格 tool-call 循环。
+  - 走 `Plan Next -> Execute One -> Observe -> Replan` 的迭代式主循环。
+  - 每轮最多保留 3 个候选方向，但只 commit 1 个 action。
+  - 内置 `max_iterations`、`max_tool_calls_per_turn`、repeated-call detection、error budget 这几类 guard。
+  - 响应体会返回 `planning_steps`，方便调试“为什么选这一步”。
   - 默认使用 `session_id = "main"` 持久化会话。
+- `POST /feishu/callback`
+  - 接收飞书卡片回调和 `im.message.receive_v1` 文本消息事件。
+  - 支持明文请求、`challenge` 校验回包、可选的 `encrypt` 解密。
+  - 如果配置了 `FEISHU_CALLBACK_VERIFICATION_TOKEN`，会校验 payload 中的 token。
+  - 文本消息事件会异步调用现有 `ToolCallEngine`，再通过飞书开放平台 reply API 回复原消息。
 - `GET /tools`
   - 列出所有已注册工具及其 JSON Schema。
 - `POST /tools/invoke`
@@ -83,6 +91,37 @@ export LLM_MODEL=gemini-2.5-flash
 cargo run
 ```
 
+Docker 构建：
+
+```bash
+docker build -t rs-tool-call:latest .
+```
+
+如果你要打带 Gemini provider 的镜像：
+
+```bash
+docker build --build-arg APP_FEATURES=gemini-provider -t rs-tool-call:gemini .
+```
+
+Docker 运行：
+
+```bash
+docker run -d \
+  --name rs-tool-call \
+  --restart unless-stopped \
+  -p 7878:7878 \
+  --env-file .env \
+  -e SERVER_ADDR=0.0.0.0:7878 \
+  rs-tool-call:latest
+```
+
+如果你要推到镜像仓库：
+
+```bash
+docker tag rs-tool-call:latest your-registry/rs-tool-call:latest
+docker push your-registry/rs-tool-call:latest
+```
+
 说明：
 
 - `LLM_PROVIDER=siliconflow` 按 SiliconFlow 的 OpenAI 兼容接口处理，默认地址是 `https://api.siliconflow.cn/v1`。
@@ -91,6 +130,13 @@ cargo run
 - 默认 `base_url` 是北京地域 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
 - 你也可以用 `DASHSCOPE_BASE_URL`、`BAILIAN_BASE_URL`、`GLM_BASE_URL` 覆盖地域 endpoint。
 - API key 支持 `DASHSCOPE_API_KEY`、`BAILIAN_API_KEY`、`GLM_API_KEY`、`LLM_API_KEY`。
+- Docker 镜像默认监听 `0.0.0.0:7878`，容器内直接运行 `rs-tool-call`。
+- 如果你在飞书后台配置服务端回调地址，建议填 `https://your-domain/feishu/callback` 或 `https://your-domain/api/feishu/callback`。
+- 如果你开启飞书加密策略，需要同时配置 `FEISHU_CALLBACK_ENCRYPT_KEY`。
+- 如果你配置了 Verification Token，需要同时配置 `FEISHU_CALLBACK_VERIFICATION_TOKEN`。
+- 如果你要让机器人在群里收到文本并自动回复，还需要配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`。
+- 飞书后台除了“回调配置”，还要在“事件配置”里订阅 `im.message.receive_v1`，并在权限管理里开通接收/回复消息相关权限。
+- 默认 `FEISHU_BOT_REQUIRE_MENTION=true`，群聊里只有显式 `@机器人` 的文本消息才会触发回复；点对点聊天不受这个限制。
 
 ## 请求示例
 
@@ -134,7 +180,7 @@ cargo run --example backtracking_call
 
 ## 代码结构
 
-- `src/engine.rs`: OpenClaw 风格的 tool-call 编排循环。
+- `src/engine.rs`: Iterative plan-execute loop，负责 planner / selector / guard / executor 的主编排。
 - `src/tools.rs`: 工具注册、schema 暴露、执行上下文。
 - `src/http_api.rs`: Salvo HTTP 路由与请求处理。
 - `src/models.rs`: adk-rust 模型初始化。

@@ -149,6 +149,10 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn has(&self, tool_name: &str) -> bool {
+        self.tools.contains_key(tool_name)
+    }
+
     pub async fn execute(&self, request: ToolExecutionRequest) -> Result<ToolExecutionResult> {
         let tool = self
             .tools

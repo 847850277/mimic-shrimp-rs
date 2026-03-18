@@ -8,12 +8,19 @@ use salvo::{
     prelude::{Json, Server, TcpListener, handler},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tracing::{debug, error, info};
 
 use crate::{
     config::AppConfig,
     engine::{ChatTurnRequest, ToolCallEngine},
+    feishu_bot::{
+        FeishuBotClient, FeishuMessageEventParseOutcome, FeishuTextMessageEvent,
+        parse_message_event,
+    },
+    feishu_callback::{
+        FeishuCallbackErrorKind, extract_event_type, process_callback as process_feishu_callback,
+    },
 };
 
 #[derive(Clone)]
@@ -89,6 +96,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .hoop(StateInjector { state })
         .push(Router::with_path("health").get(health))
+        .push(
+            Router::with_path("feishu/callback")
+                .get(feishu_callback)
+                .post(feishu_callback),
+        )
+        .push(
+            Router::with_path("api/feishu/callback")
+                .get(feishu_callback)
+                .post(feishu_callback),
+        )
         .push(Router::with_path("tools").get(list_tools))
         .push(Router::with_path("tools/invoke").post(invoke_tool))
         .push(Router::with_path("chat").post(chat))
@@ -124,6 +141,186 @@ async fn health(depot: &mut Depot, res: &mut Response) {
         provider: state.config.llm.provider.as_str().to_string(),
         model: state.config.llm.model.clone(),
     }));
+}
+
+#[handler]
+async fn feishu_callback(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let method = req.method().as_str().to_string();
+    let uri = req.uri().to_string();
+    let user_agent = req
+        .headers()
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("<missing>")
+        .to_string();
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("<missing>")
+        .to_string();
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .or_else(|| req.headers().get("x-tt-logid"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("<missing>")
+        .to_string();
+
+    let payload = match req.payload().await {
+        Ok(bytes) => bytes.clone(),
+        Err(error) => {
+            error!(
+                method = %method,
+                uri = %uri,
+                user_agent = %user_agent,
+                content_type = %content_type,
+                request_id = %request_id,
+                error = %error,
+                "failed to read feishu callback request body"
+            );
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_request_body",
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+    let raw_body_preview = preview_bytes(&payload, 320);
+    info!(
+        method = %method,
+        uri = %uri,
+        user_agent = %user_agent,
+        content_type = %content_type,
+        request_id = %request_id,
+        body_len = payload.len(),
+        raw_body_preview = %raw_body_preview,
+        "received feishu callback ingress"
+    );
+    let body = if payload.is_empty() {
+        Value::Object(Map::new())
+    } else {
+        match serde_json::from_slice::<Value>(&payload) {
+            Ok(value) => value,
+            Err(error) => {
+                error!(
+                    method = %method,
+                    uri = %uri,
+                    request_id = %request_id,
+                    raw_body_preview = %raw_body_preview,
+                    error = %error,
+                    "failed to decode feishu callback json"
+                );
+                render_error(
+                    res,
+                    StatusCode::BAD_REQUEST,
+                    "invalid_json",
+                    &error.to_string(),
+                );
+                return;
+            }
+        }
+    };
+
+    let state = app_state(depot);
+    match process_feishu_callback(body, &state.config.feishu_callback) {
+        Ok(outcome) => {
+            let event_type = extract_event_type(&outcome.payload).map(str::to_string);
+            info!(
+                encrypted = outcome.encrypted,
+                event_type = ?event_type,
+                payload_preview = %preview_value(&outcome.payload, 240),
+                "processed feishu callback"
+            );
+            match parse_message_event(&outcome.payload, &state.config.feishu_callback) {
+                Ok(FeishuMessageEventParseOutcome::Text(event)) => {
+                    info!(
+                        event_id = ?event.event_id,
+                        message_id = %event.message_id,
+                        chat_id = ?event.chat_id,
+                        chat_type = ?event.chat_type,
+                        session_id = %event.session_id,
+                        user_id = %event.user_id,
+                        message_preview = %preview_text(&event.text, 160),
+                        "received feishu text message event"
+                    );
+                    let background_state = state.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) =
+                            handle_feishu_text_message_event(background_state, event).await
+                        {
+                            error!(error = %error, "failed to process feishu text message event");
+                        }
+                    });
+                    res.render(Json(feishu_ack()));
+                }
+                Ok(FeishuMessageEventParseOutcome::Ignored { reason }) => {
+                    info!(reason, "ignored feishu message event");
+                    res.render(Json(feishu_ack()));
+                }
+                Ok(FeishuMessageEventParseOutcome::NotMessageEvent) => {
+                    res.render(Json(outcome.response_body));
+                }
+                Err(error) => {
+                    error!(error = %error, "failed to parse feishu message event");
+                    res.render(Json(feishu_ack()));
+                }
+            }
+        }
+        Err(error) => {
+            let status = match error.kind {
+                FeishuCallbackErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                FeishuCallbackErrorKind::Unauthorized => StatusCode::UNAUTHORIZED,
+            };
+            let error_type = match error.kind {
+                FeishuCallbackErrorKind::BadRequest => "feishu_callback_invalid",
+                FeishuCallbackErrorKind::Unauthorized => "feishu_callback_unauthorized",
+            };
+            error!(
+                status = %status.as_u16(),
+                error = %error.message,
+                "failed to process feishu callback"
+            );
+            render_error(res, status, error_type, &error.message);
+        }
+    }
+}
+
+async fn handle_feishu_text_message_event(
+    state: Arc<AppState>,
+    event: FeishuTextMessageEvent,
+) -> Result<()> {
+    let response = state
+        .engine
+        .run_turn(ChatTurnRequest {
+            session_id: event.session_id.clone(),
+            user_id: event.user_id.clone(),
+            message: event.text.clone(),
+            system_prompt: None,
+            max_iterations: None,
+            persist: true,
+        })
+        .await?;
+
+    let answer = if response.answer.trim().is_empty() {
+        "我暂时还没有合适的回复，请稍后再试。".to_string()
+    } else {
+        response.answer
+    };
+
+    FeishuBotClient::new(state.config.feishu_callback.clone())
+        .reply_text(&event.message_id, &answer)
+        .await?;
+
+    info!(
+        message_id = %event.message_id,
+        session_id = %event.session_id,
+        answer_preview = %preview_text(&answer, 160),
+        "replied to feishu text message"
+    );
+    Ok(())
 }
 
 #[handler]
@@ -323,6 +520,13 @@ fn render_error(res: &mut Response, status: StatusCode, error_type: &'static str
     }));
 }
 
+fn feishu_ack() -> Value {
+    json!({
+        "code": 0,
+        "msg": "ok"
+    })
+}
+
 fn preview_text(input: &str, limit: usize) -> String {
     let mut preview = input.trim().replace('\n', "\\n");
     if preview.chars().count() > limit {
@@ -337,6 +541,13 @@ fn preview_value(value: &Value, limit: usize) -> String {
         &serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".to_string()),
         limit,
     )
+}
+
+fn preview_bytes(bytes: &[u8], limit: usize) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => preview_text(text, limit),
+        Err(_) => format!("<non-utf8:{} bytes>", bytes.len()),
+    }
 }
 
 fn default_args() -> Value {

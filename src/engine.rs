@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 use adk_rust::{
     Content, FinishReason, FunctionResponseData, Llm, LlmRequest, LlmResponse, Part,
@@ -6,6 +9,7 @@ use adk_rust::{
 };
 use anyhow::{Result, anyhow};
 use serde::Serialize;
+use serde_json::Value;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -14,6 +18,11 @@ use crate::{
     tools::{ToolExecutionFailure, ToolExecutionRequest, ToolExecutionResult, ToolRegistry},
 };
 
+const DEFAULT_PLANNER_CANDIDATE_LIMIT: usize = 3;
+const DEFAULT_ERROR_BUDGET: usize = 2;
+const RECENT_TOOL_SIGNATURE_WINDOW: usize = 4;
+const DEFAULT_HISTORY_PROBE_LIMIT: usize = 6;
+
 pub struct ToolCallEngine {
     app_name: String,
     llm: Arc<dyn Llm>,
@@ -21,6 +30,9 @@ pub struct ToolCallEngine {
     session_store: SessionStore,
     default_system_prompt: String,
     max_iterations: usize,
+    max_tool_calls_per_turn: usize,
+    planner_candidate_limit: usize,
+    error_budget: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -37,9 +49,27 @@ pub struct ChatTurnRequest {
 pub struct ToolCallTrace {
     pub function_call_id: String,
     pub name: String,
-    pub args: serde_json::Value,
+    pub args: Value,
     pub status: String,
-    pub output: serde_json::Value,
+    pub output: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanningCandidateTrace {
+    pub label: String,
+    pub action_type: String,
+    pub preview: String,
+    pub selected: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanningStepTrace {
+    pub iteration: usize,
+    pub selected_action: String,
+    pub selection_reason: String,
+    pub observation: Option<String>,
+    pub candidates: Vec<PlanningCandidateTrace>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,8 +80,73 @@ pub struct ChatTurnResponse {
     pub finish_reason: Option<String>,
     pub iterations: usize,
     pub tool_calls: Vec<ToolCallTrace>,
+    pub planning_steps: Vec<PlanningStepTrace>,
     pub turn_messages: Vec<MessageView>,
     pub session_message_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionCallEnvelope {
+    function_call_id: String,
+    name: String,
+    args: Value,
+}
+
+#[derive(Debug, Clone)]
+enum PlannedAction {
+    CallTool(FunctionCallEnvelope),
+    Answer { text: String },
+    AskUser { question: String },
+}
+
+#[derive(Debug, Clone)]
+struct ActionCandidate {
+    label: String,
+    reason: String,
+    action: PlannedAction,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedAction {
+    action: PlannedAction,
+    selected_preview: String,
+    selection_reason: String,
+    candidate_traces: Vec<PlanningCandidateTrace>,
+}
+
+#[derive(Debug, Default)]
+struct TurnState {
+    tool_calls_executed: usize,
+    tool_errors: usize,
+    recent_tool_signatures: VecDeque<String>,
+}
+
+impl TurnState {
+    fn push_tool_signature(&mut self, signature: String) {
+        if self.recent_tool_signatures.len() == RECENT_TOOL_SIGNATURE_WINDOW {
+            self.recent_tool_signatures.pop_front();
+        }
+        self.recent_tool_signatures.push_back(signature);
+    }
+
+    fn would_repeat_exact(&self, signature: &str) -> bool {
+        self.recent_tool_signatures
+            .back()
+            .map(|recent| recent == signature)
+            .unwrap_or(false)
+    }
+
+    fn would_ping_pong(&self, signature: &str) -> bool {
+        if self.recent_tool_signatures.len() < 3 {
+            return false;
+        }
+
+        let len = self.recent_tool_signatures.len();
+        let a = &self.recent_tool_signatures[len - 3];
+        let b = &self.recent_tool_signatures[len - 2];
+        let c = &self.recent_tool_signatures[len - 1];
+        a == c && b == signature && a != b
+    }
 }
 
 impl ToolCallEngine {
@@ -70,6 +165,9 @@ impl ToolCallEngine {
             session_store,
             default_system_prompt,
             max_iterations,
+            max_tool_calls_per_turn: max_iterations,
+            planner_candidate_limit: DEFAULT_PLANNER_CANDIDATE_LIMIT,
+            error_budget: DEFAULT_ERROR_BUDGET,
         }
     }
 
@@ -94,7 +192,7 @@ impl ToolCallEngine {
         user_id: String,
         session_id: String,
         tool_name: String,
-        args: serde_json::Value,
+        args: Value,
     ) -> Result<ToolExecutionResult> {
         info!(
             session_id = %session_id,
@@ -118,24 +216,27 @@ impl ToolCallEngine {
     }
 
     pub async fn run_turn(&self, request: ChatTurnRequest) -> Result<ChatTurnResponse> {
-        let system_prompt = request
+        let base_system_prompt = request
             .system_prompt
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| self.default_system_prompt.clone());
+        let system_prompt = self.build_planner_system_prompt(&base_system_prompt);
         let max_iterations = request.max_iterations.unwrap_or(self.max_iterations);
         let user_content = Content::new("user").with_text(request.message.clone());
+        let prior_messages = self.session_store.snapshot(&request.session_id).await;
+        let prior_message_count = prior_messages.len();
 
         let mut transcript = VecDeque::new();
         transcript.push_back(Content::new("system").with_text(system_prompt.clone()));
-        for item in self.session_store.snapshot(&request.session_id).await {
-            transcript.push_back(item);
-        }
+        transcript.extend(prior_messages);
         transcript.push_back(user_content.clone());
 
         let invocation_id = Uuid::new_v4().to_string();
         let mut turn_messages = vec![user_content];
-        let mut traces = Vec::new();
+        let mut tool_traces = Vec::new();
+        let mut planning_steps = Vec::new();
+        let mut state = TurnState::default();
         let mut iterations = 0usize;
         let mut final_content = None;
         let mut finish_reason = None;
@@ -144,15 +245,17 @@ impl ToolCallEngine {
             session_id = %request.session_id,
             user_id = %request.user_id,
             max_iterations,
+            max_tool_calls_per_turn = self.max_tool_calls_per_turn,
+            error_budget = self.error_budget,
             persisted_history = request.persist,
-            prior_message_count = transcript.len().saturating_sub(2),
-            "starting tool-call turn"
+            prior_message_count,
+            "starting iterative plan-execute turn"
         );
         debug!(
             session_id = %request.session_id,
             system_prompt_preview = %preview_text(&system_prompt, 200),
             user_message_preview = %preview_text(&request.message, 200),
-            "prepared turn transcript"
+            "prepared iterative plan transcript"
         );
 
         for index in 0..max_iterations {
@@ -162,60 +265,82 @@ impl ToolCallEngine {
                 user_id = %request.user_id,
                 iteration = iterations,
                 transcript_messages = transcript.len(),
-                "requesting llm response"
+                tool_calls_executed = state.tool_calls_executed,
+                "planning next action"
             );
+
             let response = self
                 .collect_llm_response(transcript.make_contiguous().to_vec())
                 .await?;
-            finish_reason = response.finish_reason;
+            finish_reason = response.finish_reason.as_ref().map(finish_reason_to_string);
 
             let model_content = response
                 .content
                 .unwrap_or_else(|| Content::new("model").with_text(""));
-            let function_calls = extract_function_calls(&model_content);
+            let candidates =
+                self.plan_candidates(&request, &model_content, prior_message_count > 0);
+            let selection = self.select_action(candidates, &state);
+
             info!(
                 session_id = %request.session_id,
                 iteration = iterations,
-                finish_reason = ?finish_reason.as_ref().map(finish_reason_to_string),
-                function_call_count = function_calls.len(),
-                model_text_preview = %preview_text(&extract_text(&model_content), 160),
-                "received llm response"
+                selected_action = %selection.selected_preview,
+                selection_reason = %selection.selection_reason,
+                "selected next committed action"
             );
-            transcript.push_back(model_content.clone());
-            turn_messages.push(model_content.clone());
 
-            if function_calls.is_empty() {
-                final_content = Some(model_content);
-                info!(
-                    session_id = %request.session_id,
-                    iteration = iterations,
-                    "llm returned final answer without further tool calls"
-                );
-                break;
-            }
+            match selection.action {
+                PlannedAction::Answer { text } => {
+                    let content = Content::new("model").with_text(text.clone());
+                    transcript.push_back(content.clone());
+                    turn_messages.push(content.clone());
+                    planning_steps.push(PlanningStepTrace {
+                        iteration: iterations,
+                        selected_action: selection.selected_preview,
+                        selection_reason: selection.selection_reason,
+                        observation: Some("returned final answer".to_string()),
+                        candidates: selection.candidate_traces,
+                    });
+                    final_content = Some(content);
+                    break;
+                }
+                PlannedAction::AskUser { question } => {
+                    let content = Content::new("model").with_text(question.clone());
+                    transcript.push_back(content.clone());
+                    turn_messages.push(content.clone());
+                    planning_steps.push(PlanningStepTrace {
+                        iteration: iterations,
+                        selected_action: selection.selected_preview,
+                        selection_reason: selection.selection_reason,
+                        observation: Some("asking user for clarification".to_string()),
+                        candidates: selection.candidate_traces,
+                    });
+                    finish_reason = Some("need_user".to_string());
+                    final_content = Some(content);
+                    break;
+                }
+                PlannedAction::CallTool(function_call) => {
+                    let model_call_content = build_model_tool_call_content(&function_call);
+                    transcript.push_back(model_call_content.clone());
+                    turn_messages.push(model_call_content);
 
-            for function_call in function_calls {
-                info!(
-                    session_id = %request.session_id,
-                    iteration = iterations,
-                    function_call_id = %function_call.function_call_id,
-                    tool = %function_call.name,
-                    args_preview = %preview_json(&function_call.args, 200),
-                    "dispatching tool call"
-                );
-                let tool_result = self
-                    .dispatch_tool_call(
-                        &request,
-                        &invocation_id,
-                        &function_call.function_call_id,
-                        &function_call.name,
-                        function_call.args.clone(),
-                    )
-                    .await;
+                    let tool_signature =
+                        tool_call_signature(&function_call.name, &function_call.args);
+                    let tool_result = self
+                        .dispatch_tool_call(
+                            &request,
+                            &invocation_id,
+                            &function_call.function_call_id,
+                            &function_call.name,
+                            function_call.args.clone(),
+                        )
+                        .await;
 
-                let (tool_trace, tool_content) = match tool_result {
-                    Ok(result) => (
-                        {
+                    state.tool_calls_executed += 1;
+                    state.push_tool_signature(tool_signature);
+
+                    let (tool_trace, tool_content, observation) = match tool_result {
+                        Ok(result) => {
                             info!(
                                 session_id = %request.session_id,
                                 iteration = iterations,
@@ -224,80 +349,110 @@ impl ToolCallEngine {
                                 output_preview = %preview_json(&result.output, 200),
                                 "tool call completed"
                             );
-                            ToolCallTrace {
-                                function_call_id: result.function_call_id.clone(),
-                                name: result.tool_name.clone(),
-                                args: result.args.clone(),
-                                status: "ok".to_string(),
-                                output: result.output.clone(),
-                            }
-                        },
-                        Content {
-                            role: "tool".to_string(),
-                            parts: vec![Part::FunctionResponse {
-                                function_response: FunctionResponseData {
-                                    name: result.tool_name,
-                                    response: result.output,
+                            let output_preview = preview_json(&result.output, 160);
+                            (
+                                ToolCallTrace {
+                                    function_call_id: result.function_call_id.clone(),
+                                    name: result.tool_name.clone(),
+                                    args: result.args.clone(),
+                                    status: "ok".to_string(),
+                                    output: result.output.clone(),
                                 },
-                                id: Some(result.function_call_id),
-                            }],
-                        },
-                    ),
-                    Err(error) => {
-                        warn!(
-                            session_id = %request.session_id,
-                            iteration = iterations,
-                            function_call_id = %function_call.function_call_id,
-                            tool = %function_call.name,
-                            error = %error,
-                            "tool call failed"
-                        );
-                        let failure = ToolExecutionFailure {
-                            function_call_id: function_call.function_call_id.clone(),
-                            tool_name: function_call.name.clone(),
-                            args: function_call.args.clone(),
-                            message: error.to_string(),
-                        };
-                        let payload = serde_json::json!({
-                            "status": "error",
-                            "message": failure.message,
-                        });
-                        (
-                            ToolCallTrace {
-                                function_call_id: failure.function_call_id.clone(),
-                                name: failure.tool_name.clone(),
-                                args: failure.args.clone(),
-                                status: "error".to_string(),
-                                output: payload.clone(),
-                            },
-                            Content {
-                                role: "tool".to_string(),
-                                parts: vec![Part::FunctionResponse {
-                                    function_response: FunctionResponseData {
-                                        name: failure.tool_name,
-                                        response: payload,
-                                    },
-                                    id: Some(failure.function_call_id),
-                                }],
-                            },
-                        )
-                    }
-                };
+                                Content {
+                                    role: "tool".to_string(),
+                                    parts: vec![Part::FunctionResponse {
+                                        function_response: FunctionResponseData {
+                                            name: result.tool_name,
+                                            response: result.output,
+                                        },
+                                        id: Some(result.function_call_id),
+                                    }],
+                                },
+                                format!("tool completed successfully: {output_preview}"),
+                            )
+                        }
+                        Err(error) => {
+                            state.tool_errors += 1;
+                            warn!(
+                                session_id = %request.session_id,
+                                iteration = iterations,
+                                function_call_id = %function_call.function_call_id,
+                                tool = %function_call.name,
+                                error = %error,
+                                "tool call failed"
+                            );
+                            let failure = ToolExecutionFailure {
+                                function_call_id: function_call.function_call_id.clone(),
+                                tool_name: function_call.name.clone(),
+                                args: function_call.args.clone(),
+                                message: error.to_string(),
+                            };
+                            let payload = serde_json::json!({
+                                "status": "error",
+                                "message": failure.message,
+                            });
+                            (
+                                ToolCallTrace {
+                                    function_call_id: failure.function_call_id.clone(),
+                                    name: failure.tool_name.clone(),
+                                    args: failure.args.clone(),
+                                    status: "error".to_string(),
+                                    output: payload.clone(),
+                                },
+                                Content {
+                                    role: "tool".to_string(),
+                                    parts: vec![Part::FunctionResponse {
+                                        function_response: FunctionResponseData {
+                                            name: failure.tool_name,
+                                            response: payload.clone(),
+                                        },
+                                        id: Some(failure.function_call_id),
+                                    }],
+                                },
+                                format!("tool failed: {}", preview_json(&payload, 160)),
+                            )
+                        }
+                    };
 
-                traces.push(tool_trace);
-                transcript.push_back(tool_content.clone());
-                turn_messages.push(tool_content);
+                    transcript.push_back(tool_content.clone());
+                    turn_messages.push(tool_content);
+                    tool_traces.push(tool_trace);
+                    planning_steps.push(PlanningStepTrace {
+                        iteration: iterations,
+                        selected_action: selection.selected_preview,
+                        selection_reason: selection.selection_reason,
+                        observation: Some(observation),
+                        candidates: selection.candidate_traces,
+                    });
+
+                    if state.tool_errors >= self.error_budget {
+                        let content = self.build_fallback_content(
+                            "error budget exhausted before the turn converged",
+                            &tool_traces,
+                        );
+                        transcript.push_back(content.clone());
+                        turn_messages.push(content.clone());
+                        final_content = Some(content);
+                        finish_reason = Some("error_budget".to_string());
+                        break;
+                    }
+                }
             }
         }
 
-        let final_content = final_content.ok_or_else(|| {
-            warn!(
-                session_id = %request.session_id,
-                user_id = %request.user_id,
-                max_iterations,
-                "tool-call loop reached max iterations without final answer"
+        if final_content.is_none() {
+            let content = self.build_fallback_content(
+                "max_iterations reached before selecting a final answer",
+                &tool_traces,
             );
-            anyhow!("tool-call loop reached max iterations without a final assistant answer")
+            transcript.push_back(content.clone());
+            turn_messages.push(content.clone());
+            final_content = Some(content);
+            finish_reason = Some("max_iterations".to_string());
+        }
+
+        let final_content = final_content.ok_or_else(|| {
+            anyhow!("iterative plan-execute loop ended without a terminal response")
         })?;
 
         if request.persist {
@@ -307,7 +462,7 @@ impl ToolCallEngine {
             debug!(
                 session_id = %request.session_id,
                 appended_messages = turn_messages.len(),
-                "persisted turn messages to session store"
+                "persisted committed turn messages to session store"
             );
         }
 
@@ -324,19 +479,20 @@ impl ToolCallEngine {
             session_id = %request.session_id,
             user_id = %request.user_id,
             iterations,
-            tool_call_count = traces.len(),
+            tool_call_count = tool_traces.len(),
             answer_preview = %preview_text(&answer, 200),
             session_message_count,
-            "finished tool-call turn"
+            "finished iterative plan-execute turn"
         );
 
         Ok(ChatTurnResponse {
             session_id: request.session_id,
             user_id: request.user_id,
             answer,
-            finish_reason: finish_reason.as_ref().map(finish_reason_to_string),
+            finish_reason,
             iterations,
-            tool_calls: traces,
+            tool_calls: tool_traces,
+            planning_steps,
             turn_messages: turn_messages.iter().map(MessageView::from).collect(),
             session_message_count,
         })
@@ -347,7 +503,7 @@ impl ToolCallEngine {
             llm = self.llm.name(),
             input_message_count = contents.len(),
             tool_schema_count = self.registry.schemas().len(),
-            "collecting llm response stream"
+            "collecting planner response stream"
         );
         let mut request = LlmRequest::new(self.llm.name().to_string(), contents);
         request.tools = self.registry.schemas();
@@ -389,7 +545,7 @@ impl ToolCallEngine {
             llm = self.llm.name(),
             finish_reason = ?finish_reason.as_ref().map(finish_reason_to_string),
             part_count = content.as_ref().map(|item| item.parts.len()).unwrap_or_default(),
-            "assembled llm response stream"
+            "assembled planner response stream"
         );
 
         Ok(LlmResponse {
@@ -405,13 +561,209 @@ impl ToolCallEngine {
         })
     }
 
+    fn build_planner_system_prompt(&self, base: &str) -> String {
+        format!(
+            "{base}\n\nLoop policy:\n- Work as an iterative plan-execute-observe loop.\n- Plan only the next action, never a long chain.\n- Consider up to {} immediate next-step directions before committing one.\n- Commit at most one tool call per iteration.\n- After each tool result, re-plan from the updated transcript.\n- Avoid repeating the same tool with the same arguments.\n- If more user input is required, ask one concise clarification question.\n- If the answer is ready, return the final answer directly.",
+            self.planner_candidate_limit
+        )
+    }
+
+    fn plan_candidates(
+        &self,
+        request: &ChatTurnRequest,
+        model_content: &Content,
+        has_prior_history: bool,
+    ) -> Vec<ActionCandidate> {
+        let mut candidates = Vec::new();
+        let mut seen_signatures = HashSet::new();
+
+        for function_call in extract_function_calls(model_content) {
+            let signature = tool_call_signature(&function_call.name, &function_call.args);
+            if !seen_signatures.insert(signature) {
+                continue;
+            }
+
+            candidates.push(ActionCandidate {
+                label: format!("tool:{}", function_call.name),
+                reason: "model proposed an immediate tool step".to_string(),
+                action: PlannedAction::CallTool(function_call),
+            });
+            if candidates.len() >= self.planner_candidate_limit {
+                return candidates;
+            }
+        }
+
+        let text = extract_text(model_content);
+        if !text.is_empty() && candidates.len() < self.planner_candidate_limit {
+            candidates.push(ActionCandidate {
+                label: "answer:direct".to_string(),
+                reason: "model produced a direct answer candidate".to_string(),
+                action: PlannedAction::Answer { text },
+            });
+        }
+
+        if has_prior_history
+            && candidates.len() < self.planner_candidate_limit
+            && self.registry.has("sessions_history")
+        {
+            let args = serde_json::json!({
+                "session_id": request.session_id,
+                "limit": DEFAULT_HISTORY_PROBE_LIMIT,
+            });
+            let signature = tool_call_signature("sessions_history", &args);
+            if seen_signatures.insert(signature) {
+                candidates.push(ActionCandidate {
+                    label: "context:history".to_string(),
+                    reason:
+                        "default context branch that inspects committed session history before another action"
+                            .to_string(),
+                    action: PlannedAction::CallTool(FunctionCallEnvelope {
+                        function_call_id: format!("call-{}", Uuid::new_v4()),
+                        name: "sessions_history".to_string(),
+                        args,
+                    }),
+                });
+            }
+        }
+
+        if candidates.len() < self.planner_candidate_limit {
+            candidates.push(ActionCandidate {
+                label: "clarify:user".to_string(),
+                reason: "default clarification branch when no safer committed step remains"
+                    .to_string(),
+                action: PlannedAction::AskUser {
+                    question:
+                        "I need a bit more context to continue safely. What exact result should the next step produce?"
+                            .to_string(),
+                },
+            });
+        }
+
+        candidates.truncate(self.planner_candidate_limit);
+        candidates
+    }
+
+    fn select_action(&self, candidates: Vec<ActionCandidate>, state: &TurnState) -> SelectedAction {
+        let mut rejections = vec![String::new(); candidates.len()];
+        let mut fallback_ask_user_idx = None;
+        let mut selected_idx = None;
+        let mut selection_reason = String::new();
+
+        for (index, candidate) in candidates.iter().enumerate() {
+            match &candidate.action {
+                PlannedAction::CallTool(function_call) => {
+                    if state.tool_calls_executed >= self.max_tool_calls_per_turn {
+                        rejections[index] = "rejected by max_tool_calls_per_turn guard".to_string();
+                        continue;
+                    }
+
+                    let signature = tool_call_signature(&function_call.name, &function_call.args);
+                    if state.would_repeat_exact(&signature) {
+                        rejections[index] =
+                            "rejected by repeated-call detection (same tool + same args)"
+                                .to_string();
+                        continue;
+                    }
+
+                    if state.would_ping_pong(&signature) {
+                        rejections[index] =
+                            "rejected by repeated-call detection (A/B ping-pong)".to_string();
+                        continue;
+                    }
+
+                    selected_idx = Some(index);
+                    selection_reason = format!(
+                        "{}; selected the first viable committed tool step",
+                        candidate.reason
+                    );
+                    break;
+                }
+                PlannedAction::Answer { text } => {
+                    if text.trim().is_empty() {
+                        rejections[index] = "rejected because the answer text is empty".to_string();
+                        continue;
+                    }
+
+                    selected_idx = Some(index);
+                    selection_reason = format!(
+                        "{}; selected the direct answer because no earlier viable tool candidate won",
+                        candidate.reason
+                    );
+                    break;
+                }
+                PlannedAction::AskUser { question } => {
+                    if question.trim().is_empty() {
+                        rejections[index] =
+                            "rejected because the clarification question is empty".to_string();
+                        continue;
+                    }
+                    fallback_ask_user_idx = Some(index);
+                    rejections[index] = "kept as a fallback clarification branch".to_string();
+                }
+            }
+        }
+
+        if selected_idx.is_none() {
+            selected_idx = fallback_ask_user_idx;
+            if selected_idx.is_some() {
+                selection_reason =
+                    "selected the clarification branch because no safe tool or final answer candidate remained"
+                        .to_string();
+            }
+        }
+
+        let selected_idx = selected_idx.unwrap_or(0);
+        let selected_preview = candidate_preview(&candidates[selected_idx].action);
+        let selected_action = candidates[selected_idx].action.clone();
+        let candidate_traces = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| PlanningCandidateTrace {
+                label: candidate.label.clone(),
+                action_type: candidate_action_type(&candidate.action).to_string(),
+                preview: candidate_preview(&candidate.action),
+                selected: index == selected_idx,
+                reason: if index == selected_idx {
+                    selection_reason.clone()
+                } else if rejections[index].is_empty() {
+                    "not selected because an earlier candidate won".to_string()
+                } else {
+                    rejections[index].clone()
+                },
+            })
+            .collect();
+
+        SelectedAction {
+            action: selected_action,
+            selected_preview,
+            selection_reason,
+            candidate_traces,
+        }
+    }
+
+    fn build_fallback_content(&self, reason: &str, tool_traces: &[ToolCallTrace]) -> Content {
+        let summary = if tool_traces.is_empty() {
+            format!("I stopped because {reason}. Please clarify the next objective.")
+        } else {
+            let recent = tool_traces
+                .iter()
+                .rev()
+                .take(2)
+                .map(|trace| format!("{} => {}", trace.name, preview_json(&trace.output, 120)))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("I stopped because {reason}. Recent tool observations: {recent}")
+        };
+        Content::new("model").with_text(summary)
+    }
+
     async fn dispatch_tool_call(
         &self,
         request: &ChatTurnRequest,
         invocation_id: &str,
         function_call_id: &str,
         tool_name: &str,
-        args: serde_json::Value,
+        args: Value,
     ) -> Result<ToolExecutionResult> {
         self.registry
             .execute(ToolExecutionRequest {
@@ -426,14 +778,45 @@ impl ToolCallEngine {
             })
             .await
     }
-
 }
 
-#[derive(Debug, Clone)]
-struct FunctionCallEnvelope {
-    function_call_id: String,
-    name: String,
-    args: serde_json::Value,
+fn build_model_tool_call_content(function_call: &FunctionCallEnvelope) -> Content {
+    Content {
+        role: "model".to_string(),
+        parts: vec![Part::FunctionCall {
+            name: function_call.name.clone(),
+            args: function_call.args.clone(),
+            id: Some(function_call.function_call_id.clone()),
+        }],
+    }
+}
+
+fn candidate_action_type(action: &PlannedAction) -> &'static str {
+    match action {
+        PlannedAction::CallTool(_) => "call_tool",
+        PlannedAction::Answer { .. } => "answer",
+        PlannedAction::AskUser { .. } => "ask_user",
+    }
+}
+
+fn candidate_preview(action: &PlannedAction) -> String {
+    match action {
+        PlannedAction::CallTool(function_call) => format!(
+            "{}({})",
+            function_call.name,
+            preview_json(&function_call.args, 120)
+        ),
+        PlannedAction::Answer { text } => preview_text(text, 160),
+        PlannedAction::AskUser { question } => preview_text(question, 160),
+    }
+}
+
+fn tool_call_signature(name: &str, args: &Value) -> String {
+    format!(
+        "{}:{}",
+        name,
+        serde_json::to_string(args).unwrap_or_else(|_| "<invalid-json>".to_string())
+    )
 }
 
 fn extract_function_calls(content: &Content) -> Vec<FunctionCallEnvelope> {
@@ -487,7 +870,7 @@ fn preview_text(input: &str, limit: usize) -> String {
     preview
 }
 
-fn preview_json(value: &serde_json::Value, limit: usize) -> String {
+fn preview_json(value: &Value, limit: usize) -> String {
     preview_text(
         &serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".to_string()),
         limit,
@@ -541,7 +924,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executes_tool_loop_and_persists_turn() {
+    async fn executes_iterative_plan_execute_loop_and_persists_turn() {
         let llm = ScriptedLlm::new(vec![
             LlmResponse {
                 content: Some(Content {
@@ -589,10 +972,85 @@ mod tests {
         assert_eq!(response.answer, "2 + 3 = 5");
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].status, "ok");
+        assert_eq!(response.planning_steps.len(), 2);
 
         let history = store.history("main", None).await;
         assert_eq!(history.len(), 4);
         assert_eq!(history[1].kind, "tool_call");
         assert_eq!(history[2].kind, "tool_result");
+    }
+
+    #[tokio::test]
+    async fn commits_only_one_tool_per_iteration_even_if_model_emits_multiple_calls() {
+        let llm = ScriptedLlm::new(vec![
+            LlmResponse {
+                content: Some(Content {
+                    role: "model".to_string(),
+                    parts: vec![
+                        Part::FunctionCall {
+                            name: "math_add".to_string(),
+                            args: serde_json::json!({"a": 1.0, "b": 2.0}),
+                            id: Some("call_math".to_string()),
+                        },
+                        Part::FunctionCall {
+                            name: "time_now".to_string(),
+                            args: serde_json::json!({}),
+                            id: Some("call_time".to_string()),
+                        },
+                    ],
+                }),
+                usage_metadata: None,
+                finish_reason: Some(FinishReason::Stop),
+                citation_metadata: None,
+                partial: false,
+                turn_complete: true,
+                interrupted: false,
+                error_code: None,
+                error_message: None,
+            },
+            LlmResponse::new(Content::new("model").with_text("done")),
+        ]);
+        let store = SessionStore::default();
+        let registry = build_builtin_registry(store.clone()).expect("registry");
+        let engine = ToolCallEngine::new(
+            "test-app".to_string(),
+            Arc::new(llm),
+            registry,
+            store,
+            "use tools".to_string(),
+            4,
+        );
+
+        let response = engine
+            .run_turn(ChatTurnRequest {
+                session_id: "main".to_string(),
+                user_id: "tester".to_string(),
+                message: "do one thing".to_string(),
+                system_prompt: None,
+                max_iterations: None,
+                persist: false,
+            })
+            .await
+            .expect("chat response");
+
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "math_add");
+        assert_eq!(response.planning_steps[0].candidates.len(), 3);
+        assert!(
+            response.planning_steps[0].candidates[1]
+                .preview
+                .contains("time_now")
+        );
+    }
+
+    #[test]
+    fn detects_a_b_ping_pong_repeats() {
+        let mut state = TurnState::default();
+        state.push_tool_signature("tool:A".to_string());
+        state.push_tool_signature("tool:B".to_string());
+        state.push_tool_signature("tool:A".to_string());
+
+        assert!(state.would_ping_pong("tool:B"));
+        assert!(!state.would_ping_pong("tool:C"));
     }
 }

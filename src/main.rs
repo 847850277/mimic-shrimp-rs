@@ -1,5 +1,7 @@
 mod config;
 mod engine;
+mod feishu_bot;
+mod feishu_callback;
 mod http_api;
 mod models;
 mod session_store;
@@ -41,6 +43,15 @@ async fn main() -> Result<()> {
         provider = %config.llm.provider.as_str(),
         model = %config.llm.model,
         "starting tool-call service"
+    );
+    tracing::info!(
+        feishu_open_base_url = %config.feishu_callback.open_base_url,
+        feishu_verification_token_configured = config.feishu_callback.verification_token.is_some(),
+        feishu_encrypt_key_configured = config.feishu_callback.encrypt_key.is_some(),
+        feishu_app_id_configured = config.feishu_callback.app_id.is_some(),
+        feishu_app_secret_configured = config.feishu_callback.app_secret.is_some(),
+        feishu_require_mention = config.feishu_callback.require_mention,
+        "loaded feishu integration config"
     );
 
     run_http(Arc::new(AppState { config, engine })).await

@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub default_system_prompt: String,
     pub max_iterations: usize,
     pub llm: LlmConfig,
+    pub feishu_callback: FeishuCallbackConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,16 @@ pub struct LlmConfig {
     pub model: String,
     pub api_key: String,
     pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FeishuCallbackConfig {
+    pub verification_token: Option<String>,
+    pub encrypt_key: Option<String>,
+    pub app_id: Option<String>,
+    pub app_secret: Option<String>,
+    pub open_base_url: String,
+    pub require_mention: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +71,21 @@ impl AppConfig {
                 model,
                 api_key,
                 base_url,
+            },
+            feishu_callback: FeishuCallbackConfig {
+                verification_token: first_env(&[
+                    "FEISHU_CALLBACK_VERIFICATION_TOKEN",
+                    "FEISHU_VERIFICATION_TOKEN",
+                ]),
+                encrypt_key: first_env(&["FEISHU_CALLBACK_ENCRYPT_KEY", "FEISHU_ENCRYPT_KEY"]),
+                app_id: first_env(&["FEISHU_APP_ID", "APP_ID"]),
+                app_secret: first_env(&["FEISHU_APP_SECRET", "APP_SECRET"]),
+                open_base_url: std::env::var("FEISHU_OPEN_BASE_URL")
+                    .unwrap_or_else(|_| "https://open.feishu.cn".to_string()),
+                require_mention: parse_bool_env("FEISHU_BOT_REQUIRE_MENTION", true)
+                    .with_context(|| {
+                        "invalid FEISHU_BOT_REQUIRE_MENTION, expected true/false".to_string()
+                    })?,
             },
         })
     }
@@ -140,6 +166,17 @@ impl LlmProvider {
 
 fn first_env(keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| std::env::var(key).ok())
+}
+
+fn parse_bool_env(key: &str, default: bool) -> Result<bool> {
+    match std::env::var(key) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(anyhow!("unsupported boolean value: {raw}")),
+        },
+        Err(_) => Ok(default),
+    }
 }
 
 #[cfg(test)]

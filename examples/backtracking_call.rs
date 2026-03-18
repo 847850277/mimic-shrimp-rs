@@ -141,7 +141,10 @@ impl ThoughtDirectionRegistry {
     }
 
     fn names(&self) -> Vec<String> {
-        self.items.iter().map(|item| item.name.to_string()).collect()
+        self.items
+            .iter()
+            .map(|item| item.name.to_string())
+            .collect()
     }
 }
 
@@ -355,7 +358,11 @@ fn inspect_execution(
     )
 }
 
-fn branch_reason(problem: &SearchProblem, sandbox: &WorkspaceState, status: BranchStatus) -> String {
+fn branch_reason(
+    problem: &SearchProblem,
+    sandbox: &WorkspaceState,
+    status: BranchStatus,
+) -> String {
     match status {
         BranchStatus::Success => format!(
             "分支命中目标 {}，提交副作用并保留当前调用链。",
