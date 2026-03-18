@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -22,9 +22,6 @@ const DEFAULT_PLANNER_CANDIDATE_LIMIT: usize = 3;
 const DEFAULT_ERROR_BUDGET: usize = 2;
 const RECENT_TOOL_SIGNATURE_WINDOW: usize = 4;
 const DEFAULT_HISTORY_PROBE_LIMIT: usize = 6;
-const MAX_EXEC_COMMAND_CALLS_PER_TURN: usize = 3;
-const EXEC_COMMAND_SYNTHESIS_AFTER_SUCCESSFUL_CALLS: usize = 2;
-const EXEC_COMMAND_SYNTHESIS_OUTPUT_LIMIT: usize = 1200;
 
 pub struct ToolCallEngine {
     app_name: String,
@@ -122,9 +119,6 @@ struct TurnState {
     tool_calls_executed: usize,
     tool_errors: usize,
     recent_tool_signatures: VecDeque<String>,
-    tool_call_counts: HashMap<String, usize>,
-    successful_exec_command_calls: usize,
-    last_exec_command_answer: Option<String>,
 }
 
 impl TurnState {
@@ -152,39 +146,6 @@ impl TurnState {
         let b = &self.recent_tool_signatures[len - 2];
         let c = &self.recent_tool_signatures[len - 1];
         a == c && b == signature && a != b
-    }
-
-    fn record_tool_call(&mut self, tool_name: &str, signature: String) {
-        self.tool_calls_executed += 1;
-        *self
-            .tool_call_counts
-            .entry(tool_name.to_string())
-            .or_default() += 1;
-        self.push_tool_signature(signature);
-    }
-
-    fn record_tool_outcome(&mut self, tool_name: &str, output: &Value, success: bool) {
-        if tool_name != "exec_command" || !success {
-            return;
-        }
-
-        self.successful_exec_command_calls += 1;
-        if let Some(answer) = build_exec_command_synthesis_answer(output) {
-            self.last_exec_command_answer = Some(answer);
-        }
-    }
-
-    fn tool_call_count(&self, tool_name: &str) -> usize {
-        self.tool_call_counts.get(tool_name).copied().unwrap_or(0)
-    }
-
-    fn should_prefer_exec_command_answer(&self) -> bool {
-        self.successful_exec_command_calls >= EXEC_COMMAND_SYNTHESIS_AFTER_SUCCESSFUL_CALLS
-            && self.last_exec_command_answer.is_some()
-    }
-
-    fn exec_command_answer(&self) -> Option<String> {
-        self.last_exec_command_answer.clone()
     }
 }
 
@@ -317,7 +278,7 @@ impl ToolCallEngine {
                 .content
                 .unwrap_or_else(|| Content::new("model").with_text(""));
             let candidates =
-                self.plan_candidates(&request, &model_content, prior_message_count > 0, &state);
+                self.plan_candidates(&request, &model_content, prior_message_count > 0);
             let selection = self.select_action(candidates, &state);
 
             info!(
@@ -375,11 +336,11 @@ impl ToolCallEngine {
                         )
                         .await;
 
-                    state.record_tool_call(&function_call.name, tool_signature);
+                    state.tool_calls_executed += 1;
+                    state.push_tool_signature(tool_signature);
 
                     let (tool_trace, tool_content, observation) = match tool_result {
                         Ok(result) => {
-                            state.record_tool_outcome(&result.tool_name, &result.output, true);
                             info!(
                                 session_id = %request.session_id,
                                 iteration = iterations,
@@ -480,10 +441,15 @@ impl ToolCallEngine {
         }
 
         if final_content.is_none() {
-            let content = self.build_fallback_content(
-                "max_iterations reached before selecting a final answer",
-                &tool_traces,
-            );
+            let content = self
+                .synthesize_final_answer(transcript.make_contiguous())
+                .await
+                .unwrap_or_else(|| {
+                    self.build_fallback_content(
+                        "max_iterations reached before selecting a final answer",
+                        &tool_traces,
+                    )
+                });
             transcript.push_back(content.clone());
             turn_messages.push(content.clone());
             final_content = Some(content);
@@ -602,7 +568,7 @@ impl ToolCallEngine {
 
     fn build_planner_system_prompt(&self, base: &str) -> String {
         format!(
-            "{base}\n\nLoop policy:\n- Work as an iterative plan-execute-observe loop.\n- Plan only the next action, never a long chain.\n- Consider up to {} immediate next-step directions before committing one.\n- Commit at most one tool call per iteration.\n- After each tool result, re-plan from the updated transcript.\n- Avoid repeating the same tool with the same arguments.\n- If exec_command already returned useful output, stop shelling out and synthesize the answer from that result.\n- Do not spend turns probing whether curl, wget, nc, python, or similar binaries exist unless the user explicitly asked to debug the server environment.\n- If more user input is required, ask one concise clarification question.\n- If the answer is ready, return the final answer directly.",
+            "{base}\n\nLoop policy:\n- Work as an iterative plan-execute-observe loop.\n- Plan only the next action, never a long chain.\n- Consider up to {} immediate next-step directions before committing one.\n- Commit at most one tool call per iteration.\n- After each tool result, re-plan from the updated transcript.\n- Avoid repeating the same tool with the same arguments.\n- Only return a final answer when you have verified the result is correct and meaningful, not just that a command ran successfully.\n- If a tool result is an error or indicates service unavailability, try a different approach rather than returning that as the answer.\n- Do not spend turns probing whether curl, wget, nc, python, or similar binaries exist unless the user explicitly asked to debug the server environment.\n- If more user input is required, ask one concise clarification question.\n- If the answer is ready, return the final answer directly.",
             self.planner_candidate_limit
         )
     }
@@ -612,7 +578,6 @@ impl ToolCallEngine {
         request: &ChatTurnRequest,
         model_content: &Content,
         has_prior_history: bool,
-        state: &TurnState,
     ) -> Vec<ActionCandidate> {
         let mut candidates = Vec::new();
         let mut seen_signatures = HashSet::new();
@@ -640,19 +605,6 @@ impl ToolCallEngine {
                 reason: "model produced a direct answer candidate".to_string(),
                 action: PlannedAction::Answer { text },
             });
-        }
-
-        if state.should_prefer_exec_command_answer()
-            && candidates.len() < self.planner_candidate_limit
-        {
-            if let Some(text) = state.exec_command_answer() {
-                candidates.push(ActionCandidate {
-                    label: "answer:exec_command".to_string(),
-                    reason: "recent successful exec_command output should now be synthesized into a final answer"
-                        .to_string(),
-                    action: PlannedAction::Answer { text },
-                });
-            }
         }
 
         if has_prior_history
@@ -702,23 +654,6 @@ impl ToolCallEngine {
         let mut selected_idx = None;
         let mut selection_reason = String::new();
 
-        if state.should_prefer_exec_command_answer() {
-            for (index, candidate) in candidates.iter().enumerate() {
-                if let PlannedAction::Answer { text } = &candidate.action {
-                    if text.trim().is_empty() {
-                        rejections[index] = "rejected because the answer text is empty".to_string();
-                        continue;
-                    }
-                    selected_idx = Some(index);
-                    selection_reason = format!(
-                        "{}; selected the answer to converge after successful exec_command output",
-                        candidate.reason
-                    );
-                    break;
-                }
-            }
-        }
-
         for (index, candidate) in candidates.iter().enumerate() {
             if selected_idx.is_some() {
                 break;
@@ -728,22 +663,6 @@ impl ToolCallEngine {
                     if state.tool_calls_executed >= self.max_tool_calls_per_turn {
                         rejections[index] = "rejected by max_tool_calls_per_turn guard".to_string();
                         continue;
-                    }
-
-                    if function_call.name == "exec_command" {
-                        if state.should_prefer_exec_command_answer() {
-                            rejections[index] =
-                                "rejected because recent exec_command output should be synthesized into a final answer"
-                                    .to_string();
-                            continue;
-                        }
-                        if state.tool_call_count("exec_command") >= MAX_EXEC_COMMAND_CALLS_PER_TURN
-                        {
-                            rejections[index] =
-                                "rejected by exec_command per-turn cap to force convergence"
-                                    .to_string();
-                            continue;
-                        }
                     }
 
                     let signature = tool_call_signature(&function_call.name, &function_call.args);
@@ -831,17 +750,6 @@ impl ToolCallEngine {
     }
 
     fn build_fallback_content(&self, reason: &str, tool_traces: &[ToolCallTrace]) -> Content {
-        if let Some(answer) = tool_traces.iter().rev().find_map(|trace| {
-            (trace.name == "exec_command" && trace.status == "ok")
-                .then(|| build_exec_command_synthesis_answer(&trace.output))
-                .flatten()
-        }) {
-            let summary = format!(
-                "I stopped because {reason}, but I already have a usable command result:\n{answer}"
-            );
-            return Content::new("model").with_text(summary);
-        }
-
         let summary = if tool_traces.is_empty() {
             format!("I stopped because {reason}. Please clarify the next objective.")
         } else {
@@ -855,6 +763,45 @@ impl ToolCallEngine {
             format!("I stopped because {reason}. Recent tool observations: {recent}")
         };
         Content::new("model").with_text(summary)
+    }
+
+    async fn synthesize_final_answer(&self, transcript: &[Content]) -> Option<Content> {
+        let mut synthesis_transcript = transcript.to_vec();
+        synthesis_transcript.push(Content::new("user").with_text(
+            "Based on all the steps and tool results above, provide a clear and concise final answer to the original user request. Use the same language the user used. If you obtained valid data, present it directly. If all attempts failed, explain what went wrong and suggest alternatives. Do not mention iteration limits, internal engine details, or tool names.",
+        ));
+        let mut request = LlmRequest::new(self.llm.name().to_string(), synthesis_transcript);
+        request.tools = std::collections::HashMap::new();
+        match self.llm.generate_content(request, true).await {
+            Ok(mut stream) => {
+                let mut parts = Vec::new();
+                while let Some(item) = stream.next().await {
+                    if let Ok(response) = item {
+                        if let Some(content) = response.content {
+                            append_stream_parts(&mut parts, content.parts);
+                        }
+                    }
+                }
+                let text = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        Part::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(Content::new("model").with_text(text))
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, "synthesis LLM call failed, using built-in fallback");
+                None
+            }
+        }
     }
 
     async fn dispatch_tool_call(
@@ -990,56 +937,6 @@ fn preview_json(value: &Value, limit: usize) -> String {
         &serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".to_string()),
         limit,
     )
-}
-
-fn build_exec_command_synthesis_answer(output: &Value) -> Option<String> {
-    let success = output.get("success")?.as_bool()?;
-    let timed_out = output
-        .get("timed_out")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if !success || timed_out {
-        return None;
-    }
-
-    let stdout = output
-        .get("stdout")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("");
-    if stdout.is_empty() || looks_like_html(stdout) {
-        return None;
-    }
-
-    let rendered = match serde_json::from_str::<Value>(stdout) {
-        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| stdout.to_string()),
-        Err(_) => stdout.to_string(),
-    };
-    let rendered = truncate_preserving_newlines(&rendered, EXEC_COMMAND_SYNTHESIS_OUTPUT_LIMIT);
-
-    Some(format!(
-        "我已经执行了服务器命令，并拿到了最近一次有效结果：\n{rendered}"
-    ))
-}
-
-fn looks_like_html(text: &str) -> bool {
-    let lower = text.trim_start().to_ascii_lowercase();
-    lower.starts_with("<!doctype html")
-        || lower.starts_with("<html")
-        || lower.contains("<body")
-        || lower.contains("</html>")
-}
-
-fn truncate_preserving_newlines(input: &str, max_chars: usize) -> String {
-    let trimmed = input.trim();
-    let char_count = trimmed.chars().count();
-    if char_count <= max_chars {
-        return trimmed.to_string();
-    }
-
-    let mut result = trimmed.chars().take(max_chars).collect::<String>();
-    result.push_str("...");
-    result
 }
 
 #[cfg(test)]
@@ -1285,13 +1182,14 @@ mod tests {
 
     #[tokio::test]
     async fn converges_after_successful_exec_command_results() {
+        // The LLM calls exec_command once, gets weather data, then returns a direct answer.
         let llm = ScriptedLlm::new(vec![
             LlmResponse {
                 content: Some(Content {
                     role: "model".to_string(),
                     parts: vec![Part::FunctionCall {
                         name: "exec_command".to_string(),
-                        args: serde_json::json!({"cmd": "printf 'first probe'"}),
+                        args: serde_json::json!({"cmd": "printf '{\"weather\":\"晴\",\"temp\":25}'"}),
                         id: Some("call_exec_1".to_string()),
                     }],
                 }),
@@ -1307,28 +1205,8 @@ mod tests {
             LlmResponse {
                 content: Some(Content {
                     role: "model".to_string(),
-                    parts: vec![Part::FunctionCall {
-                        name: "exec_command".to_string(),
-                        args: serde_json::json!({"cmd": "printf '{\"weather\":\"晴\",\"temp\":25}'"}),
-                        id: Some("call_exec_2".to_string()),
-                    }],
-                }),
-                usage_metadata: None,
-                finish_reason: Some(FinishReason::Stop),
-                citation_metadata: None,
-                partial: false,
-                turn_complete: true,
-                interrupted: false,
-                error_code: None,
-                error_message: None,
-            },
-            LlmResponse {
-                content: Some(Content {
-                    role: "model".to_string(),
-                    parts: vec![Part::FunctionCall {
-                        name: "exec_command".to_string(),
-                        args: serde_json::json!({"cmd": "printf 'should not run'"}),
-                        id: Some("call_exec_3".to_string()),
+                    parts: vec![Part::Text {
+                        text: "北京今天天气晴，气温25度。".to_string(),
                     }],
                 }),
                 usage_metadata: None,
@@ -1365,13 +1243,12 @@ mod tests {
             .await
             .expect("chat response");
 
-        assert_eq!(response.tool_calls.len(), 2);
+        assert_eq!(response.tool_calls.len(), 1);
         assert!(
-            response.answer.contains("最近一次有效结果"),
-            "answer should synthesize command output: {}",
+            response.answer.contains("晴"),
+            "answer should contain weather result: {}",
             response.answer
         );
-        assert!(response.answer.contains("\"weather\": \"晴\""));
     }
 
     #[test]
@@ -1383,19 +1260,5 @@ mod tests {
 
         assert!(state.would_ping_pong("tool:B"));
         assert!(!state.would_ping_pong("tool:C"));
-    }
-
-    #[test]
-    fn builds_exec_command_synthesis_answer_from_json_stdout() {
-        let answer = build_exec_command_synthesis_answer(&serde_json::json!({
-            "success": true,
-            "timed_out": false,
-            "stdout": "{\"weather\":\"晴\",\"temp\":25}",
-            "stderr": ""
-        }))
-        .expect("answer");
-
-        assert!(answer.contains("\"weather\": \"晴\""));
-        assert!(answer.contains("\"temp\": 25"));
     }
 }
