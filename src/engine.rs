@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
+    logging,
     session_store::{MessageView, SessionStore},
     tools::{ToolExecutionFailure, ToolExecutionRequest, ToolExecutionResult, ToolRegistry},
 };
@@ -296,11 +297,17 @@ impl ToolCallEngine {
                     turn_messages.push(content.clone());
                     planning_steps.push(PlanningStepTrace {
                         iteration: iterations,
-                        selected_action: selection.selected_preview,
-                        selection_reason: selection.selection_reason,
+                        selected_action: selection.selected_preview.clone(),
+                        selection_reason: selection.selection_reason.clone(),
                         observation: Some("returned final answer".to_string()),
                         candidates: selection.candidate_traces,
                     });
+                    logging::log_chain_step_answer(
+                        &request.session_id,
+                        iterations,
+                        &text,
+                        &selection.selection_reason,
+                    );
                     final_content = Some(content);
                     break;
                 }
@@ -310,11 +317,17 @@ impl ToolCallEngine {
                     turn_messages.push(content.clone());
                     planning_steps.push(PlanningStepTrace {
                         iteration: iterations,
-                        selected_action: selection.selected_preview,
-                        selection_reason: selection.selection_reason,
+                        selected_action: selection.selected_preview.clone(),
+                        selection_reason: selection.selection_reason.clone(),
                         observation: Some("asking user for clarification".to_string()),
                         candidates: selection.candidate_traces,
                     });
+                    logging::log_chain_step_ask_user(
+                        &request.session_id,
+                        iterations,
+                        &question,
+                        &selection.selection_reason,
+                    );
                     finish_reason = Some("need_user".to_string());
                     final_content = Some(content);
                     break;
@@ -416,6 +429,17 @@ impl ToolCallEngine {
 
                     transcript.push_back(tool_content.clone());
                     turn_messages.push(tool_content);
+
+                    logging::log_chain_step_tool(
+                        &request.session_id,
+                        iterations,
+                        &tool_trace.name,
+                        &tool_trace.args,
+                        &tool_trace.status,
+                        &tool_trace.output,
+                        &selection.selection_reason,
+                    );
+
                     tool_traces.push(tool_trace);
                     planning_steps.push(PlanningStepTrace {
                         iteration: iterations,
@@ -513,6 +537,8 @@ impl ToolCallEngine {
         let mut request = LlmRequest::new(self.llm.name().to_string(), contents);
         request.tools = self.registry.schemas();
 
+        logging::log_llm_request(&request.model, &request.contents, &request.tools, None);
+
         let mut stream = self.llm.generate_content(request, true).await?;
         let mut all_parts = Vec::new();
         let mut usage_metadata = None;
@@ -551,6 +577,13 @@ impl ToolCallEngine {
             finish_reason = ?finish_reason.as_ref().map(finish_reason_to_string),
             part_count = content.as_ref().map(|item| item.parts.len()).unwrap_or_default(),
             "assembled planner response stream"
+        );
+
+        logging::log_llm_response(
+            self.llm.name(),
+            finish_reason.as_ref().map(finish_reason_to_string),
+            content.as_ref(),
+            None,
         );
 
         Ok(LlmResponse {
@@ -772,6 +805,9 @@ impl ToolCallEngine {
         ));
         let mut request = LlmRequest::new(self.llm.name().to_string(), synthesis_transcript);
         request.tools = std::collections::HashMap::new();
+
+        logging::log_llm_request(&request.model, &request.contents, &request.tools, Some("synthesis"));
+
         match self.llm.generate_content(request, true).await {
             Ok(mut stream) => {
                 let mut parts = Vec::new();
@@ -791,11 +827,18 @@ impl ToolCallEngine {
                     .collect::<Vec<_>>()
                     .join("");
                 let text = text.trim().to_string();
-                if text.is_empty() {
+                let synthesis_content = if text.is_empty() {
                     None
                 } else {
                     Some(Content::new("model").with_text(text))
-                }
+                };
+                logging::log_llm_response(
+                    self.llm.name(),
+                    None,
+                    synthesis_content.as_ref(),
+                    Some("synthesis"),
+                );
+                synthesis_content
             }
             Err(err) => {
                 warn!(error = %err, "synthesis LLM call failed, using built-in fallback");

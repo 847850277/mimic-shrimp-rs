@@ -3,6 +3,7 @@ mod engine;
 mod feishu_bot;
 mod feishu_callback;
 mod http_api;
+mod logging;
 mod models;
 mod session_store;
 mod tools;
