@@ -33,6 +33,18 @@ pub(crate) struct ToolInvokeRequest {
     pub(crate) args: Value,
 }
 
+/// `/extract/form` 接口的请求体。
+#[derive(Debug, Deserialize)]
+pub(crate) struct FormExtractRequest {
+    #[serde(default)]
+    pub(crate) form_id: Option<String>,
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) schema: Option<Value>,
+    #[serde(default)]
+    pub(crate) instructions: Option<String>,
+}
+
 /// 错误响应外层结构。
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorBody {
@@ -52,6 +64,27 @@ pub(crate) struct ErrorPayload {
 pub(crate) struct ToolInvokeResponse {
     pub(crate) ok: bool,
     pub(crate) result: Value,
+}
+
+/// `/extract/form` 接口中的单字段校验问题。
+#[derive(Debug, Serialize)]
+pub(crate) struct FormInvalidFieldResponse {
+    pub(crate) field: String,
+    pub(crate) message: String,
+}
+
+/// `/extract/form` 接口的成功响应体。
+#[derive(Debug, Serialize)]
+pub(crate) struct FormExtractResponse {
+    pub(crate) ok: bool,
+    pub(crate) form_id: Option<String>,
+    pub(crate) form_title: Option<String>,
+    pub(crate) schema_source: &'static str,
+    pub(crate) raw_text: String,
+    pub(crate) data: Value,
+    pub(crate) missing_fields: Vec<String>,
+    pub(crate) invalid_fields: Vec<FormInvalidFieldResponse>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// 健康检查接口的响应体。

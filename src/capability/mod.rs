@@ -13,7 +13,7 @@ use adk_rust::Llm;
 use crate::engine::ToolCallEngine;
 
 pub use conversation::{ConversationCapability, ConversationRequest};
-pub use extraction::StructuredExtractionCapability;
+pub use extraction::{StructuredExtractionCapability, StructuredExtractionRequest};
 pub use sessions::SessionCapability;
 pub use tools::{DirectToolInvocationRequest, ToolCapability};
 
@@ -21,8 +21,7 @@ pub use tools::{DirectToolInvocationRequest, ToolCapability};
 #[derive(Clone)]
 pub struct CapabilityHub {
     conversation: ConversationCapability,
-    /// 预留的结构化抽取能力，后续会通过独立接口暴露。
-    #[allow(dead_code)]
+    /// 结构化抽取能力，供独立的表单抽取接口调用。
     extraction: StructuredExtractionCapability,
     sessions: SessionCapability,
     tools: ToolCapability,
@@ -45,7 +44,6 @@ impl CapabilityHub {
     }
 
     /// 返回结构化抽取能力。
-    #[allow(dead_code)]
     pub fn extraction(&self) -> &StructuredExtractionCapability {
         &self.extraction
     }

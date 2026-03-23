@@ -53,6 +53,43 @@ pub fn log_http_chat_failed(session_id: &str, user_id: &str, error_message: &str
     );
 }
 
+/// 记录 `/extract/form` 请求的入口信息。
+pub fn log_http_form_extract_request(form_id: Option<&str>, text: &str, inline_schema: bool) {
+    info!(
+        form_id = ?form_id,
+        inline_schema,
+        text_preview = %preview_text(text, 160),
+        "received form extraction request"
+    );
+}
+
+/// 记录 `/extract/form` 请求成功完成时的摘要信息。
+pub fn log_http_form_extract_complete(
+    form_id: Option<&str>,
+    missing_field_count: usize,
+    invalid_field_count: usize,
+    warning_count: usize,
+    data: &Value,
+) {
+    info!(
+        form_id = ?form_id,
+        missing_field_count,
+        invalid_field_count,
+        warning_count,
+        data_preview = %preview_json(data, 220),
+        "completed form extraction request"
+    );
+}
+
+/// 记录 `/extract/form` 请求失败的情况。
+pub fn log_http_form_extract_failed(form_id: Option<&str>, error_message: &str) {
+    error!(
+        form_id = ?form_id,
+        error = %error_message,
+        "form extraction request failed"
+    );
+}
+
 /// 记录直接工具调用接口的入口信息。
 pub fn log_http_tool_invoke_request(session_id: &str, user_id: &str, tool: &str, args: &Value) {
     info!(

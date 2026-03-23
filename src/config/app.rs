@@ -1,9 +1,11 @@
 //! 应用配置模块，负责从环境变量装配整个服务运行所需的总配置。
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 
 use super::{
-    ExecCommandToolConfig, FeishuCallbackConfig, LlmConfig, LlmProvider,
+    ExecCommandToolConfig, FeishuCallbackConfig, FormConfig, LlmConfig, LlmProvider,
     env::{first_env, parse_bool_env, parse_u64_env, parse_usize_env},
 };
 
@@ -15,6 +17,7 @@ pub struct AppConfig {
     pub default_system_prompt: String,
     pub max_iterations: usize,
     pub llm: LlmConfig,
+    pub forms: FormConfig,
     pub feishu_callback: FeishuCallbackConfig,
     pub exec_command_tool: ExecCommandToolConfig,
 }
@@ -55,6 +58,12 @@ impl AppConfig {
                 model,
                 api_key,
                 base_url,
+            },
+            forms: FormConfig {
+                markdown_dir: PathBuf::from(
+                    std::env::var("FORM_MARKDOWN_DIR")
+                        .unwrap_or_else(|_| "./forms".to_string()),
+                ),
             },
             feishu_callback: FeishuCallbackConfig {
                 verification_token: first_env(&[

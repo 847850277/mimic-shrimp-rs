@@ -5,13 +5,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use salvo::{Depot, FlowCtrl, Handler, Request, Response};
 
-use crate::{capability::CapabilityHub, config::AppConfig};
+use crate::{capability::CapabilityHub, config::AppConfig, forms::FormCatalog};
 
 /// HTTP 层共享状态，包含配置和对外暴露的能力集合。
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     pub capabilities: CapabilityHub,
+    pub form_catalog: FormCatalog,
 }
 
 /// 状态注入器，会在每个请求开始时把 `AppState` 放入 `Depot`。

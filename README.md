@@ -31,6 +31,10 @@ HTTP 层使用 [salvo](https://github.com/salvo-rs/salvo)，LLM 集成使用 [ad
   - 查看当前内存中的会话。
 - `GET /sessions/{session_id}/history`
   - 查看某个会话的消息历史。
+- `POST /extract/form`
+  - 独立于 `/chat` 的单轮结构化抽取接口。
+  - 支持通过 `form_id` 从本地 Markdown 表单目录加载字段定义，也支持直接传 `schema`。
+  - 模型抽取完成后会按 schema 做二次校验，返回 `missing_fields`、`invalid_fields` 和 `warnings`。
 
 ## 内置工具
 
@@ -148,6 +152,7 @@ docker push your-registry/rs-tool-call:latest
 - 飞书后台除了“回调配置”，还要在“事件配置”里订阅 `im.message.receive_v1`，并在权限管理里开通接收/回复消息相关权限。
 - 默认 `FEISHU_BOT_REQUIRE_MENTION=true`，群聊里只有显式 `@机器人` 的文本消息才会触发回复；点对点聊天不受这个限制。
 - 如果你要让模型能在服务器上执行 shell 命令，需要显式开启 `EXEC_COMMAND_TOOL_ENABLED=true`；默认关闭。
+- 本地 Markdown 表单目录默认是 `./forms`，可用 `FORM_MARKDOWN_DIR` 覆盖。
 
 ## 请求示例
 
@@ -175,6 +180,19 @@ curl -s http://127.0.0.1:7878/tools/invoke \
  }'
 ```
 
+结构化表单抽取：
+
+```bash
+curl -s http://127.0.0.1:7878/extract/form \
+  -H 'content-type: application/json' \
+  -d '{
+    "form_id": "basic_profile",
+    "text": "我叫张三，男，32岁，手机号 13800138000"
+  }'
+```
+
+本地 Markdown 表单示例见 [forms/basic_profile.md](/Users/zhengpeng/Source/Code/Rust-Code/Github/rs-tool-call/forms/basic_profile.md)。
+
 独立的回溯调用最小示例：
 
 ```bash
@@ -191,10 +209,12 @@ cargo run --example backtracking_call
 
 ## 代码结构
 
-- `src/engine.rs`: Iterative plan-execute loop，负责 planner / selector / guard / executor 的主编排。
-- `src/tools.rs`: 工具注册、schema 暴露、执行上下文。
-- `src/http_api.rs`: Salvo HTTP 路由与请求处理。
-- `src/models.rs`: adk-rust 模型初始化。
+- `src/engine.rs` + `src/engine/*`: Iterative plan-execute loop，负责 planner / selector / guard / executor 的主编排。
+- `src/tools/*`: 工具注册、schema 暴露、执行上下文。
+- `src/web/*`: Salvo HTTP 路由与请求处理。
+- `src/capability/*`: 聊天、工具调用、会话查询、结构化抽取等能力边界。
+- `src/forms/*`: 本地 Markdown 表单加载与抽取结果校验。
+- `src/models/*`: adk-rust 模型初始化。
 - `src/session_store.rs`: 内存会话存储和历史视图。
 
 ## 后续可扩展方向

@@ -9,18 +9,22 @@ use serde_json::{Map, Value};
 use tracing::debug;
 
 use crate::{
-    capability::{ConversationRequest, DirectToolInvocationRequest},
+    capability::{ConversationRequest, DirectToolInvocationRequest, StructuredExtractionRequest},
     channel::InboundMessageParseOutcome,
     channel::feishu::{
         FeishuCallbackErrorKind, callback_ack, extract_event_type, handle_text_message_event,
         parse_message_event, process_callback as process_feishu_callback,
     },
+    forms::validate_form_data,
     logging,
 };
 
 use super::{
     state::app_state,
-    types::{ChatRequest, HealthResponse, ToolInvokeRequest, ToolInvokeResponse},
+    types::{
+        ChatRequest, FormExtractRequest, FormExtractResponse, FormInvalidFieldResponse,
+        HealthResponse, ToolInvokeRequest, ToolInvokeResponse,
+    },
     util::{merge_action_into_args, render_error},
 };
 
@@ -296,6 +300,150 @@ pub(crate) async fn chat(req: &mut Request, depot: &mut Depot, res: &mut Respons
     }
 }
 
+/// 处理单轮结构化表单抽取请求。
+#[handler]
+pub(crate) async fn extract_form(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let body = match req.parse_json::<FormExtractRequest>().await {
+        Ok(value) => value,
+        Err(error) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+
+    logging::log_http_form_extract_request(
+        body.form_id.as_deref(),
+        &body.text,
+        body.schema.is_some(),
+    );
+
+    let state = app_state(depot);
+    let mut warnings = Vec::new();
+    let resolved_form = if let Some(form_id) = body.form_id.as_deref() {
+        match state.form_catalog.load(form_id) {
+            Ok(form) => {
+                debug!(
+                    form_id = %form.form_id,
+                    source_path = %form.source_path.display(),
+                    "loaded local markdown form definition"
+                );
+                if body.schema.is_some() {
+                    warnings.push(
+                        "inline schema was ignored because form_id resolved to a local markdown form"
+                            .to_string(),
+                    );
+                }
+                Some(form)
+            }
+            Err(error) if form_load_not_found(&error) => {
+                logging::log_http_form_extract_failed(body.form_id.as_deref(), &error.to_string());
+                render_error(
+                    res,
+                    StatusCode::NOT_FOUND,
+                    "form_not_found",
+                    &error.to_string(),
+                );
+                return;
+            }
+            Err(error) => {
+                logging::log_http_form_extract_failed(body.form_id.as_deref(), &error.to_string());
+                render_error(
+                    res,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "form_definition_invalid",
+                    &error.to_string(),
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
+    let (form_id, form_title, schema_source, schema, instructions) =
+        if let Some(form) = resolved_form {
+            (
+                Some(form.form_id),
+                form.title,
+                "markdown",
+                form.schema,
+                merge_instructions(form.instructions, body.instructions),
+            )
+        } else if let Some(schema) = body.schema {
+            (
+                None,
+                None,
+                "inline",
+                schema,
+                body.instructions.filter(|value| !value.trim().is_empty()),
+            )
+        } else {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "either form_id or schema must be provided",
+            );
+            return;
+        };
+
+    match state
+        .capabilities
+        .extraction()
+        .execute(StructuredExtractionRequest {
+            schema: schema.clone(),
+            input_text: body.text.clone(),
+            schema_name: form_title.clone().or_else(|| form_id.clone()),
+            instructions,
+        })
+        .await
+    {
+        Ok(output) => {
+            let mut report = validate_form_data(&schema, &output.data);
+            warnings.append(&mut report.warnings);
+            logging::log_http_form_extract_complete(
+                form_id.as_deref(),
+                report.missing_fields.len(),
+                report.invalid_fields.len(),
+                warnings.len(),
+                &output.data,
+            );
+            res.render(Json(FormExtractResponse {
+                ok: true,
+                form_id,
+                form_title,
+                schema_source,
+                raw_text: body.text,
+                data: output.data,
+                missing_fields: report.missing_fields,
+                invalid_fields: report
+                    .invalid_fields
+                    .into_iter()
+                    .map(|issue| FormInvalidFieldResponse {
+                        field: issue.field,
+                        message: issue.message,
+                    })
+                    .collect(),
+                warnings,
+            }));
+        }
+        Err(error) => {
+            logging::log_http_form_extract_failed(body.form_id.as_deref(), &error.to_string());
+            render_error(
+                res,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "form_extraction_failed",
+                &error.to_string(),
+            );
+        }
+    }
+}
+
 /// 处理直接工具调用请求。
 #[handler]
 pub(crate) async fn invoke_tool(req: &mut Request, depot: &mut Depot, res: &mut Response) {
@@ -347,4 +495,34 @@ pub(crate) async fn invoke_tool(req: &mut Request, depot: &mut Depot, res: &mut 
             )
         }
     }
+}
+
+/// 合并表单定义中的默认提取说明和本次请求追加说明。
+fn merge_instructions(
+    form_instructions: Option<String>,
+    request_instructions: Option<String>,
+) -> Option<String> {
+    let form_instructions = form_instructions
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let request_instructions = request_instructions
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match (form_instructions, request_instructions) {
+        (Some(left), Some(right)) => Some(format!(
+            "{left}\n\nAdditional request instructions:\n{right}"
+        )),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+/// 判断表单加载错误是否来自文件不存在。
+fn form_load_not_found(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(|io_error| io_error.kind() == std::io::ErrorKind::NotFound)
+        .unwrap_or(false)
 }

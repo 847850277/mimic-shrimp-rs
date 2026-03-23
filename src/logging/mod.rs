@@ -18,6 +18,7 @@ pub use channel::{
 pub use engine::{log_chain_step_answer, log_chain_step_ask_user, log_chain_step_tool};
 pub use http::{
     log_http_chat_complete, log_http_chat_failed, log_http_chat_request,
+    log_http_form_extract_complete, log_http_form_extract_failed, log_http_form_extract_request,
     log_http_tool_invoke_complete, log_http_tool_invoke_failed, log_http_tool_invoke_request,
 };
 pub use llm::{log_llm_request, log_llm_response};
