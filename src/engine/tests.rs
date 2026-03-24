@@ -89,7 +89,8 @@ async fn executes_iterative_plan_execute_loop_and_persists_turn() {
         LlmResponse::new(Content::new("model").with_text("2 + 3 = 5")),
     ]);
     let store = SessionStore::default();
-    let registry = build_builtin_registry(store.clone(), disabled_exec_tool()).expect("registry");
+    let registry =
+        build_builtin_registry(store.clone(), disabled_exec_tool(), None).expect("registry");
     let engine = ToolCallEngine::new(
         "test-app".to_string(),
         Arc::new(llm),
@@ -155,7 +156,8 @@ async fn commits_only_one_tool_per_iteration_even_if_model_emits_multiple_calls(
         LlmResponse::new(Content::new("model").with_text("done")),
     ]);
     let store = SessionStore::default();
-    let registry = build_builtin_registry(store.clone(), disabled_exec_tool()).expect("registry");
+    let registry =
+        build_builtin_registry(store.clone(), disabled_exec_tool(), None).expect("registry");
     let engine = ToolCallEngine::new(
         "test-app".to_string(),
         Arc::new(llm),
@@ -214,7 +216,8 @@ async fn merges_streamed_text_parts_without_inserting_newlines() {
         error_message: None,
     }]);
     let store = SessionStore::default();
-    let registry = build_builtin_registry(store.clone(), disabled_exec_tool()).expect("registry");
+    let registry =
+        build_builtin_registry(store.clone(), disabled_exec_tool(), None).expect("registry");
     let engine = ToolCallEngine::new(
         "test-app".to_string(),
         Arc::new(llm),
@@ -279,7 +282,8 @@ async fn converges_after_successful_exec_command_results() {
         },
     ]);
     let store = SessionStore::default();
-    let registry = build_builtin_registry(store.clone(), enabled_exec_tool()).expect("registry");
+    let registry =
+        build_builtin_registry(store.clone(), enabled_exec_tool(), None).expect("registry");
     let engine = ToolCallEngine::new(
         "test-app".to_string(),
         Arc::new(llm),

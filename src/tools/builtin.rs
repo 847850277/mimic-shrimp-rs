@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    capability::EnglishLearningCapability,
     config::ExecCommandToolConfig,
     session_store::{MessageView, SessionStore, SessionSummary},
 };
@@ -63,6 +64,26 @@ struct TimeNowResult {
     utc_hint: String,
 }
 
+/// 英语学习工具的统一文本输出结构。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct EnglishLearningReplyResult {
+    action: String,
+    reply: String,
+}
+
+/// 跟读反馈工具的输入参数。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct EnglishLearningShadowingArgs {
+    transcript: String,
+}
+
+/// 跟读反馈工具的输出结构。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct EnglishLearningShadowingResult {
+    handled: bool,
+    reply: String,
+}
+
 /// 无参数工具的空输入结构。
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 struct EmptyArgs {}
@@ -71,6 +92,7 @@ struct EmptyArgs {}
 pub fn build_builtin_registry(
     session_store: SessionStore,
     exec_command_config: ExecCommandToolConfig,
+    english_learning: Option<EnglishLearningCapability>,
 ) -> Result<ToolRegistry> {
     let list_store = session_store.clone();
     let history_store = session_store.clone();
@@ -150,6 +172,107 @@ pub fn build_builtin_registry(
     ) as Arc<dyn Tool>;
 
     let mut tools = vec![sessions_list, sessions_history, math_add, time_now];
+
+    if let Some(english_learning) = english_learning.clone() {
+        let learning_start = Arc::new(
+            FunctionTool::new(
+                "english_learning_start_today",
+                "Start today's English learning lesson card for the current session.",
+                move |ctx, _args| {
+                    let learning = english_learning.clone();
+                    async move {
+                        let reply = learning
+                            .start_today_lesson_tool(ctx.session_id())
+                            .await
+                            .map_err(|error| AdkError::Tool(error.to_string()))?;
+                        Ok(serde_json::to_value(EnglishLearningReplyResult {
+                            action: "english_learning_start_today".to_string(),
+                            reply,
+                        })?)
+                    }
+                },
+            )
+            .with_parameters_schema::<EmptyArgs>()
+            .with_response_schema::<EnglishLearningReplyResult>(),
+        ) as Arc<dyn Tool>;
+        tools.push(learning_start);
+    }
+
+    if let Some(english_learning) = english_learning.clone() {
+        let learning_explain = Arc::new(
+            FunctionTool::new(
+                "english_learning_explain_focus_sentence",
+                "Explain the focus sentence from today's English learning lesson for the current session.",
+                move |ctx, _args| {
+                    let learning = english_learning.clone();
+                    async move {
+                        let reply = learning
+                            .explain_focus_sentence_tool(ctx.session_id())
+                            .await
+                            .map_err(|error| AdkError::Tool(error.to_string()))?;
+                        Ok(serde_json::to_value(EnglishLearningReplyResult {
+                            action: "english_learning_explain_focus_sentence".to_string(),
+                            reply,
+                        })?)
+                    }
+                },
+            )
+            .with_parameters_schema::<EmptyArgs>()
+            .with_response_schema::<EnglishLearningReplyResult>(),
+        ) as Arc<dyn Tool>;
+        tools.push(learning_explain);
+    }
+
+    if let Some(english_learning) = english_learning.clone() {
+        let learning_next_question = Arc::new(
+            FunctionTool::new(
+                "english_learning_next_question",
+                "Return the next comprehension question from today's English learning lesson for the current session.",
+                move |ctx, _args| {
+                    let learning = english_learning.clone();
+                    async move {
+                        let reply = learning
+                            .next_question_tool(ctx.session_id())
+                            .await
+                            .map_err(|error| AdkError::Tool(error.to_string()))?;
+                        Ok(serde_json::to_value(EnglishLearningReplyResult {
+                            action: "english_learning_next_question".to_string(),
+                            reply,
+                        })?)
+                    }
+                },
+            )
+            .with_parameters_schema::<EmptyArgs>()
+            .with_response_schema::<EnglishLearningReplyResult>(),
+        ) as Arc<dyn Tool>;
+        tools.push(learning_next_question);
+    }
+
+    if let Some(english_learning) = english_learning.clone() {
+        let learning_shadowing_feedback = Arc::new(
+            FunctionTool::new(
+                "english_learning_shadowing_feedback",
+                "Evaluate an English shadowing transcript against the current focus sentence for the session.",
+                move |ctx, args| {
+                    let learning = english_learning.clone();
+                    async move {
+                        let input: EnglishLearningShadowingArgs = serde_json::from_value(args)?;
+                        let (handled, reply) = learning
+                            .shadowing_feedback_tool(ctx.session_id(), &input.transcript)
+                            .await
+                            .map_err(|error| AdkError::Tool(error.to_string()))?;
+                        Ok(serde_json::to_value(EnglishLearningShadowingResult {
+                            handled,
+                            reply,
+                        })?)
+                    }
+                },
+            )
+            .with_parameters_schema::<EnglishLearningShadowingArgs>()
+            .with_response_schema::<EnglishLearningShadowingResult>(),
+        ) as Arc<dyn Tool>;
+        tools.push(learning_shadowing_feedback);
+    }
 
     if exec_command_config.enabled {
         let exec_command = Arc::new(

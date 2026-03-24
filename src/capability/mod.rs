@@ -10,12 +10,7 @@ mod tools;
 
 use std::sync::Arc;
 
-use adk_rust::Llm;
-
-use crate::{
-    config::{EnglishLearningConfig, MediaTranslateConfig},
-    engine::ToolCallEngine,
-};
+use crate::{config::MediaTranslateConfig, engine::ToolCallEngine};
 
 pub use conversation::{ConversationCapability, ConversationRequest};
 pub use extraction::{StructuredExtractionCapability, StructuredExtractionRequest};
@@ -44,16 +39,15 @@ impl CapabilityHub {
     /// 基于底层引擎创建完整的能力集合。
     pub fn new(
         engine: Arc<ToolCallEngine>,
-        llm: Arc<dyn Llm>,
+        extraction: StructuredExtractionCapability,
         media_translate_config: MediaTranslateConfig,
-        english_learning_config: EnglishLearningConfig,
+        english_learning: EnglishLearningCapability,
     ) -> Self {
-        let extraction = StructuredExtractionCapability::new(llm);
         Self {
             conversation: ConversationCapability::new(engine.clone()),
             extraction: extraction.clone(),
             media_translate: MediaTranslateCapability::new(media_translate_config),
-            english_learning: EnglishLearningCapability::new(english_learning_config, extraction),
+            english_learning,
             sessions: SessionCapability::new(engine.clone()),
             tools: ToolCapability::new(engine),
         }

@@ -369,42 +369,8 @@ impl EnglishLearningCapability {
         session_id: &str,
         transcript: &str,
     ) -> Result<Option<String>> {
-        if !self.config.enabled {
-            return Ok(None);
-        }
-
-        let Some(state) = self.session_store.get(session_id).await else {
-            return Ok(None);
-        };
-        let lesson = self.ensure_today_lesson().await?;
-        if !state.lesson_date.trim().is_empty() && state.lesson_date != lesson.lesson_date {
-            return Ok(None);
-        }
-
-        let focus_sentence = if state.focus_sentence.trim().is_empty() {
-            select_focus_sentence(&lesson)
-        } else {
-            state.focus_sentence.clone()
-        };
-        let evaluation = evaluate_shadowing_attempt(&focus_sentence, transcript);
-        if !evaluation.should_handle {
-            return Ok(None);
-        }
-
-        logging::log_learning_shadowing_evaluated(
-            session_id,
-            &lesson.lesson_date,
-            evaluation.score_percent,
-            evaluation.matched_word_count,
-            evaluation.target_word_count,
-            transcript,
-        );
-
-        Ok(Some(format_shadowing_feedback(
-            &focus_sentence,
-            transcript,
-            &evaluation,
-        )))
+        let (handled, reply) = self.shadowing_feedback_tool(session_id, transcript).await?;
+        if handled { Ok(Some(reply)) } else { Ok(None) }
     }
 
     /// 判断当前会话是否已经进入当天英语学习上下文。
@@ -416,6 +382,93 @@ impl EnglishLearningCapability {
             Ok(lesson_date) => state.lesson_date == lesson_date,
             Err(_) => false,
         }
+    }
+
+    /// 显式启动今天的英语学习卡片，适合挂到 ToolRegistry 中作为确定性工具动作。
+    pub async fn start_today_lesson_tool(&self, session_id: &str) -> Result<String> {
+        if !self.config.enabled {
+            return Ok("英语学习功能当前未启用。".to_string());
+        }
+        let lesson = self.ensure_today_lesson().await?;
+        Ok(self.start_today_lesson(session_id, &lesson).await)
+    }
+
+    /// 显式解释当前重点句子，适合挂到 ToolRegistry 中作为确定性工具动作。
+    pub async fn explain_focus_sentence_tool(&self, session_id: &str) -> Result<String> {
+        if !self.config.enabled {
+            return Ok("英语学习功能当前未启用。".to_string());
+        }
+        let lesson = self.ensure_today_lesson().await?;
+        Ok(self.explain_focus_sentence(session_id, &lesson).await)
+    }
+
+    /// 显式返回下一道理解题，适合挂到 ToolRegistry 中作为确定性工具动作。
+    pub async fn next_question_tool(&self, session_id: &str) -> Result<String> {
+        if !self.config.enabled {
+            return Ok("英语学习功能当前未启用。".to_string());
+        }
+        let lesson = self.ensure_today_lesson().await?;
+        Ok(self.next_question(session_id, &lesson).await)
+    }
+
+    /// 显式评估一段跟读文本，适合挂到 ToolRegistry 中作为确定性工具动作。
+    pub async fn shadowing_feedback_tool(
+        &self,
+        session_id: &str,
+        transcript: &str,
+    ) -> Result<(bool, String)> {
+        if !self.config.enabled {
+            return Ok((false, "英语学习功能当前未启用。".to_string()));
+        }
+
+        let trimmed = transcript.trim();
+        if trimmed.is_empty() {
+            return Ok((false, "请提供一段英语跟读文本后再进行评估。".to_string()));
+        }
+
+        let Some(state) = self.session_store.get(session_id).await else {
+            return Ok((
+                false,
+                "当前还没有开始英语学习会话，请先调用 english_learning_start_today。".to_string(),
+            ));
+        };
+        let lesson = self.ensure_today_lesson().await?;
+        if !state.lesson_date.trim().is_empty() && state.lesson_date != lesson.lesson_date {
+            return Ok((
+                false,
+                "当前学习会话不是今天的内容，请先重新开始今天的英语学习。".to_string(),
+            ));
+        }
+
+        let focus_sentence = if state.focus_sentence.trim().is_empty() {
+            select_focus_sentence(&lesson)
+        } else {
+            state.focus_sentence.clone()
+        };
+        let evaluation = evaluate_shadowing_attempt(&focus_sentence, trimmed);
+        if !evaluation.should_handle {
+            return Ok((
+                false,
+                format!(
+                    "当前识别文本和重点句子的匹配度还不够，暂时不判定为跟读。目标句子是：{}",
+                    focus_sentence
+                ),
+            ));
+        }
+
+        logging::log_learning_shadowing_evaluated(
+            session_id,
+            &lesson.lesson_date,
+            evaluation.score_percent,
+            evaluation.matched_word_count,
+            evaluation.target_word_count,
+            trimmed,
+        );
+
+        Ok((
+            true,
+            format_shadowing_feedback(&focus_sentence, trimmed, &evaluation),
+        ))
     }
 
     /// 确保今天的英语学习卡片已经存在，不存在则即时生成。

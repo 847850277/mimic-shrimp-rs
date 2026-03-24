@@ -17,7 +17,7 @@ use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::{
-    capability::CapabilityHub,
+    capability::{CapabilityHub, EnglishLearningCapability, StructuredExtractionCapability},
     config::AppConfig,
     engine::ToolCallEngine,
     forms::{MarkdownFormStore, SharedFormDefinitionStore},
@@ -35,10 +35,17 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     let llm = build_llm(&config.llm)?;
     let extraction_llm = llm.clone();
+    let extraction = StructuredExtractionCapability::new(extraction_llm);
+    let english_learning =
+        EnglishLearningCapability::new(config.english_learning.clone(), extraction.clone());
     let form_store: SharedFormDefinitionStore =
         Arc::new(MarkdownFormStore::new(config.forms.markdown_dir.clone()));
     let session_store = SessionStore::default();
-    let registry = build_builtin_registry(session_store.clone(), config.exec_command_tool.clone())?;
+    let registry = build_builtin_registry(
+        session_store.clone(),
+        config.exec_command_tool.clone(),
+        Some(english_learning.clone()),
+    )?;
     let engine = Arc::new(ToolCallEngine::new(
         config.app_name.clone(),
         llm,
@@ -49,9 +56,9 @@ async fn main() -> Result<()> {
     ));
     let capabilities = CapabilityHub::new(
         engine,
-        extraction_llm,
+        extraction,
         config.media_translate.clone(),
-        config.english_learning.clone(),
+        english_learning,
     );
 
     logging::log_service_startup(
