@@ -35,6 +35,10 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/rs-tool-call /usr/local/bin/rs-tool-call
+COPY forms ./forms
+
+RUN mkdir -p /app/learning_data \
+    && chown -R 65534:65534 /app
 
 ENV APP_NAME=rs-tool-call
 ENV SERVER_ADDR=0.0.0.0:7878
