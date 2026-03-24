@@ -3,6 +3,7 @@
 
 mod conversation;
 mod extraction;
+mod learning;
 mod media_translate;
 mod sessions;
 mod tools;
@@ -11,10 +12,14 @@ use std::sync::Arc;
 
 use adk_rust::Llm;
 
-use crate::{config::MediaTranslateConfig, engine::ToolCallEngine};
+use crate::{
+    config::{EnglishLearningConfig, MediaTranslateConfig},
+    engine::ToolCallEngine,
+};
 
 pub use conversation::{ConversationCapability, ConversationRequest};
 pub use extraction::{StructuredExtractionCapability, StructuredExtractionRequest};
+pub use learning::EnglishLearningCapability;
 pub use media_translate::{
     MediaTranslateAudioOutput, MediaTranslateCapability, MediaTranslateInput, MediaTranslateRequest,
 };
@@ -29,6 +34,8 @@ pub struct CapabilityHub {
     extraction: StructuredExtractionCapability,
     /// 媒体翻译能力，独立接入阿里百炼媒体翻译接口。
     media_translate: MediaTranslateCapability,
+    /// 每日英语学习能力，负责新闻抓取、学习卡片生成和学习口令处理。
+    english_learning: EnglishLearningCapability,
     sessions: SessionCapability,
     tools: ToolCapability,
 }
@@ -39,11 +46,14 @@ impl CapabilityHub {
         engine: Arc<ToolCallEngine>,
         llm: Arc<dyn Llm>,
         media_translate_config: MediaTranslateConfig,
+        english_learning_config: EnglishLearningConfig,
     ) -> Self {
+        let extraction = StructuredExtractionCapability::new(llm);
         Self {
             conversation: ConversationCapability::new(engine.clone()),
-            extraction: StructuredExtractionCapability::new(llm),
+            extraction: extraction.clone(),
             media_translate: MediaTranslateCapability::new(media_translate_config),
+            english_learning: EnglishLearningCapability::new(english_learning_config, extraction),
             sessions: SessionCapability::new(engine.clone()),
             tools: ToolCapability::new(engine),
         }
@@ -62,6 +72,11 @@ impl CapabilityHub {
     /// 返回媒体翻译能力。
     pub fn media_translate(&self) -> &MediaTranslateCapability {
         &self.media_translate
+    }
+
+    /// 返回每日英语学习能力。
+    pub fn english_learning(&self) -> &EnglishLearningCapability {
+        &self.english_learning
     }
 
     /// 返回会话查询能力。

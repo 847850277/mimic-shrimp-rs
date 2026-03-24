@@ -160,6 +160,7 @@ pub(crate) async fn feishu_callback(req: &mut Request, depot: &mut Depot, res: &
                     tokio::spawn(async move {
                         if let Err(error) = handle_text_message_event(
                             background_state.capabilities.conversation().clone(),
+                            background_state.capabilities.english_learning().clone(),
                             background_state.config.feishu_callback.clone(),
                             event,
                         )
@@ -190,6 +191,7 @@ pub(crate) async fn feishu_callback(req: &mut Request, depot: &mut Depot, res: &
                     tokio::spawn(async move {
                         if let Err(error) = handle_audio_message_event(
                             background_state.capabilities.conversation().clone(),
+                            background_state.capabilities.english_learning().clone(),
                             background_state.capabilities.media_translate().clone(),
                             background_state.config.feishu_callback.clone(),
                             event,

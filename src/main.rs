@@ -47,7 +47,12 @@ async fn main() -> Result<()> {
         config.default_system_prompt.clone(),
         config.max_iterations,
     ));
-    let capabilities = CapabilityHub::new(engine, extraction_llm, config.media_translate.clone());
+    let capabilities = CapabilityHub::new(
+        engine,
+        extraction_llm,
+        config.media_translate.clone(),
+        config.english_learning.clone(),
+    );
 
     logging::log_service_startup(
         &config.server_addr,
@@ -64,8 +69,23 @@ async fn main() -> Result<()> {
         config.exec_command_tool.enabled,
         &config.exec_command_tool.shell,
     );
+    logging::log_learning_config(
+        config.english_learning.enabled,
+        config.english_learning.scheduler_enabled,
+        config.english_learning.schedule_hour,
+        config.english_learning.timezone_offset_hours,
+        &config.english_learning.storage_dir,
+        config.english_learning.news_sources.len(),
+    );
     if config.feishu_callback.app_id.is_none() || config.feishu_callback.app_secret.is_none() {
         logging::log_feishu_reply_disabled();
+    }
+
+    if config.english_learning.enabled && config.english_learning.scheduler_enabled {
+        let learning = capabilities.english_learning().clone();
+        tokio::spawn(async move {
+            learning.run_scheduler_loop().await;
+        });
     }
 
     run_http(Arc::new(AppState {

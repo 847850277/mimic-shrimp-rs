@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 use super::{
-    ExecCommandToolConfig, FeishuCallbackConfig, FormConfig, LlmConfig, LlmProvider,
-    MediaTranslateConfig,
-    env::{first_env, parse_bool_env, parse_u64_env, parse_usize_env},
+    EnglishLearningConfig, ExecCommandToolConfig, FeishuCallbackConfig, FormConfig, LlmConfig,
+    LlmProvider, MediaTranslateConfig,
+    env::{first_env, parse_bool_env, parse_csv_env, parse_u64_env, parse_usize_env},
 };
 
 /// 应用总配置，聚合了服务自身、模型、通道和工具相关配置。
@@ -20,6 +20,7 @@ pub struct AppConfig {
     pub llm: LlmConfig,
     pub forms: FormConfig,
     pub media_translate: MediaTranslateConfig,
+    pub english_learning: EnglishLearningConfig,
     pub feishu_callback: FeishuCallbackConfig,
     pub exec_command_tool: ExecCommandToolConfig,
 }
@@ -45,6 +46,27 @@ impl AppConfig {
         };
         if max_iterations == 0 {
             bail!("MAX_TOOL_ITERATIONS must be greater than 0");
+        }
+
+        let english_learning_schedule_hour = match std::env::var("ENGLISH_LEARNING_SCHEDULE_HOUR") {
+            Ok(raw) => raw
+                .parse::<u32>()
+                .with_context(|| format!("invalid ENGLISH_LEARNING_SCHEDULE_HOUR: {raw}"))?,
+            Err(_) => 9,
+        };
+        if english_learning_schedule_hour > 23 {
+            bail!("ENGLISH_LEARNING_SCHEDULE_HOUR must be between 0 and 23");
+        }
+
+        let english_learning_timezone_offset_hours =
+            match std::env::var("ENGLISH_LEARNING_TZ_OFFSET_HOURS") {
+                Ok(raw) => raw
+                    .parse::<i32>()
+                    .with_context(|| format!("invalid ENGLISH_LEARNING_TZ_OFFSET_HOURS: {raw}"))?,
+                Err(_) => 8,
+            };
+        if !(-23..=23).contains(&english_learning_timezone_offset_hours) {
+            bail!("ENGLISH_LEARNING_TZ_OFFSET_HOURS must be between -23 and 23");
         }
 
         Ok(Self {
@@ -83,6 +105,38 @@ impl AppConfig {
                 .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
                 model: std::env::var("MEDIA_TRANSLATE_MODEL")
                     .unwrap_or_else(|_| "qwen3-livetranslate-flash".to_string()),
+            },
+            english_learning: EnglishLearningConfig {
+                enabled: parse_bool_env("ENGLISH_LEARNING_ENABLED", true).with_context(|| {
+                    "invalid ENGLISH_LEARNING_ENABLED, expected true/false".to_string()
+                })?,
+                scheduler_enabled: parse_bool_env("ENGLISH_LEARNING_SCHEDULER_ENABLED", true)
+                    .with_context(|| {
+                        "invalid ENGLISH_LEARNING_SCHEDULER_ENABLED, expected true/false"
+                            .to_string()
+                    })?,
+                schedule_hour: english_learning_schedule_hour,
+                timezone_offset_hours: english_learning_timezone_offset_hours,
+                storage_dir: PathBuf::from(
+                    std::env::var("ENGLISH_LEARNING_STORAGE_DIR")
+                        .unwrap_or_else(|_| "./learning_data".to_string()),
+                ),
+                news_sources: {
+                    let configured = parse_csv_env("ENGLISH_LEARNING_NEWS_SOURCES");
+                    if configured.is_empty() {
+                        vec!["https://feeds.bbci.co.uk/news/world/rss.xml".to_string()]
+                    } else {
+                        configured
+                    }
+                },
+                max_feed_items_per_source: parse_usize_env(
+                    "ENGLISH_LEARNING_MAX_FEED_ITEMS_PER_SOURCE",
+                    5,
+                )
+                .with_context(|| {
+                    "invalid ENGLISH_LEARNING_MAX_FEED_ITEMS_PER_SOURCE, expected integer"
+                        .to_string()
+                })?,
             },
             feishu_callback: FeishuCallbackConfig {
                 verification_token: first_env(&[

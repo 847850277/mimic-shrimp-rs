@@ -38,3 +38,17 @@ pub(crate) fn parse_usize_env(key: &str, default: usize) -> Result<usize> {
         Err(_) => Ok(default),
     }
 }
+
+/// 解析逗号分隔的字符串列表环境变量。
+pub(crate) fn parse_csv_env(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}

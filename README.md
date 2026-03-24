@@ -39,6 +39,13 @@ HTTP 层使用 [salvo](https://github.com/salvo-rs/salvo)，LLM 集成使用 [ad
   - 独立于 `/chat` 的媒体翻译接口。
   - 当前对接阿里百炼 `qwen3-livetranslate-flash` 的 OpenAI 兼容接口。
   - 支持音频 URL/Data URL 或视频 URL 输入，默认返回文本翻译，也支持可选音频输出。
+- 每日英语学习能力
+  - 服务内可选调度器会在每天早上 9 点拉取固定 RSS 新闻源，生成一份“今日英语学习卡片”并保存到本地。
+  - 当前卡片包含：中英摘要、重点词汇、重点句子、3 个理解问题、跟读练习、翻译练习。
+  - 飞书里命中以下口令时，会优先走学习能力而不是普通聊天：
+    - `开始今天的英语学习`
+    - `这句话什么意思`
+    - `再出一道题`
 
 ## 内置工具
 
@@ -158,6 +165,9 @@ docker push your-registry/rs-tool-call:latest
 - 如果你要让模型能在服务器上执行 shell 命令，需要显式开启 `EXEC_COMMAND_TOOL_ENABLED=true`；默认关闭。
 - 本地 Markdown 表单目录默认是 `./forms`，可用 `FORM_MARKDOWN_DIR` 覆盖。
 - 媒体翻译接口默认读取 `MEDIA_TRANSLATE_API_KEY` 和 `MEDIA_TRANSLATE_BASE_URL`；未单独配置时，会回退到 DashScope 相关环境变量。
+- 每日英语学习能力默认使用 `./learning_data/lessons` 保存 lesson 文件，可用 `ENGLISH_LEARNING_STORAGE_DIR` 覆盖。
+- 每日英语学习调度默认按 `UTC+8` 的 `09:00` 运行，可通过 `ENGLISH_LEARNING_SCHEDULE_HOUR` 和 `ENGLISH_LEARNING_TZ_OFFSET_HOURS` 调整。
+- 新闻源默认是 `https://feeds.bbci.co.uk/news/world/rss.xml`，也可以通过 `ENGLISH_LEARNING_NEWS_SOURCES` 配多个 RSS 地址，逗号分隔。
 
 ## 请求示例
 

@@ -1,0 +1,59 @@
+{
+  "lesson_date": "2026-03-24",
+  "generated_at_ms": 1774336963101,
+  "article": {
+    "source_url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "title": "Ultimatums, diplomacy and a trip to Graceland as Trump eyes a deal with Iran",
+    "link": "https://www.bbc.com/news/articles/c895v5pq5p1o?at_medium=RSS&at_campaign=rss",
+    "summary": "America may be a nation at war, but the president's activities have been a mix of diplomacy and diversions - with the occasional swing toward the surreal.",
+    "published_at": "Tue, 24 Mar 2026 02:41:31 GMT"
+  },
+  "headline_zh": "特朗普寻求与伊朗达成协议：最后通牒、外交与格雷斯兰之行",
+  "summary_en": "This BBC article discusses President Trump's approach to negotiating a deal with Iran, characterizing his activities as a blend of diplomacy and diversions. Despite America being at war, the president's actions include issuing ultimatums, engaging in diplomatic efforts, and even visiting Graceland, with some moments described as surreal.",
+  "summary_zh": "这篇BBC文章讨论了特朗普总统在寻求与伊朗达成协议时的做法，将其活动描述为外交与消遣的混合体。尽管美国处于战争状态，总统的行动包括发出最后通牒、开展外交努力，甚至访问猫王故居格雷斯兰，其中一些时刻被形容为超现实。",
+  "keywords": [
+    "Iran",
+    "Trump",
+    "diplomacy",
+    "negotiations",
+    "Graceland"
+  ],
+  "vocabulary": [
+    {
+      "word": "ultimatum",
+      "meaning_zh": "最后通牒；最后要求",
+      "example_en": "The president issued an ultimatum to Iran regarding the nuclear deal.",
+      "example_zh": "总统就核协议向伊朗发出了最后通牒。"
+    },
+    {
+      "word": "diplomacy",
+      "meaning_zh": "外交；外交手段",
+      "example_en": "Despite being at war, the president's activities included diplomacy and negotiations.",
+      "example_zh": "尽管处于战争状态，总统的活动仍包括外交和谈判。"
+    },
+    {
+      "word": "surreal",
+      "meaning_zh": "超现实的；离奇的",
+      "example_en": "Some moments during the president's trip were described as surreal.",
+      "example_zh": "总统行程中的一些时刻被形容为超现实。"
+    }
+  ],
+  "example_sentences": [
+    {
+      "english": "America may be a nation at war, but the president's activities have been a mix of diplomacy and diversions.",
+      "chinese": "美国可能正处于战争状态，但总统的活动却是外交与消遣的混合体。"
+    },
+    {
+      "english": "Despite America being at war, the president's actions include issuing ultimatums and even visiting Graceland.",
+      "chinese": "尽管美国处于战争状态，总统的行动包括发出最后通牒，甚至访问格雷斯兰。"
+    }
+  ],
+  "questions": [
+    "What characterizes President Trump's approach to negotiating with Iran according to the article?",
+    "What activities has the president engaged in besides diplomatic efforts?",
+    "How are some moments during the president's activities described in the article?"
+  ],
+  "shadowing_practice": "America may be a nation at war, but the president's activities have been a mix of diplomacy and diversions.",
+  "translation_practice": "请将以下句子翻译成英文：尽管美国处于战争状态，总统的行动包括发出最后通牒、开展外交努力，甚至访问格雷斯兰。",
+  "focus_sentence": "America may be a nation at war, but the president's activities have been a mix of diplomacy and diversions."
+}

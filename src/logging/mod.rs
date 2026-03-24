@@ -4,6 +4,7 @@
 mod channel;
 mod engine;
 mod http;
+mod learning;
 mod llm;
 mod preview;
 mod startup;
@@ -24,6 +25,11 @@ pub use http::{
     log_http_media_translate_complete, log_http_media_translate_failed,
     log_http_media_translate_request, log_http_tool_invoke_complete, log_http_tool_invoke_failed,
     log_http_tool_invoke_request,
+};
+pub use learning::{
+    log_learning_background_error, log_learning_command_handled, log_learning_config,
+    log_learning_lesson_saved, log_learning_news_ingest_started, log_learning_news_selected,
+    log_learning_scheduler_started,
 };
 pub use llm::{log_llm_request, log_llm_response};
 pub use preview::{preview_bytes, preview_json, preview_text};
