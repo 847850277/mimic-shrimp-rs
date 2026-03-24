@@ -12,7 +12,7 @@ use super::{
     cors::CorsHandler,
     handlers::{
         chat, cors_preflight, extract_form, feishu_callback, health, invoke_tool, list_sessions,
-        list_tools, session_history, translate_media,
+        list_tools, session_history, synthesize_speech, translate_media,
     },
     state::{AppState, StateInjector},
 };
@@ -69,6 +69,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             Router::with_path("translate/media")
                 .options(cors_preflight)
                 .post(translate_media),
+        )
+        .push(
+            Router::with_path("speech/synthesize")
+                .options(cors_preflight)
+                .post(synthesize_speech),
         )
         .push(
             Router::with_path("sessions")

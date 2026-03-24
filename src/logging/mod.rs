@@ -10,21 +10,22 @@ mod preview;
 mod startup;
 
 pub use channel::{
-    log_channel_audio_message_received, log_channel_audio_transcribed,
-    log_channel_background_error, log_channel_callback_body_read_error,
-    log_channel_callback_ingress, log_channel_callback_json_error,
-    log_channel_callback_process_error, log_channel_callback_processed,
-    log_channel_message_ignored, log_channel_message_parse_error, log_channel_reply_stage,
-    log_channel_reply_success, log_channel_resource_fetch_retry, log_channel_text_message_received,
-    log_channel_text_replied,
+    log_channel_audio_message_received, log_channel_audio_replied, log_channel_audio_reply_stage,
+    log_channel_audio_transcribed, log_channel_background_error,
+    log_channel_callback_body_read_error, log_channel_callback_ingress,
+    log_channel_callback_json_error, log_channel_callback_process_error,
+    log_channel_callback_processed, log_channel_message_ignored, log_channel_message_parse_error,
+    log_channel_reply_stage, log_channel_reply_success, log_channel_resource_fetch_retry,
+    log_channel_text_message_received, log_channel_text_replied,
 };
 pub use engine::{log_chain_step_answer, log_chain_step_ask_user, log_chain_step_tool};
 pub use http::{
     log_http_chat_complete, log_http_chat_failed, log_http_chat_request,
     log_http_form_extract_complete, log_http_form_extract_failed, log_http_form_extract_request,
     log_http_media_translate_complete, log_http_media_translate_failed,
-    log_http_media_translate_request, log_http_tool_invoke_complete, log_http_tool_invoke_failed,
-    log_http_tool_invoke_request,
+    log_http_media_translate_request, log_http_speech_synthesis_complete,
+    log_http_speech_synthesis_failed, log_http_speech_synthesis_request,
+    log_http_tool_invoke_complete, log_http_tool_invoke_failed, log_http_tool_invoke_request,
 };
 pub use learning::{
     log_learning_background_error, log_learning_command_handled, log_learning_config,

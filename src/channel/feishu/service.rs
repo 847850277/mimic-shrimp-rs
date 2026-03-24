@@ -8,13 +8,14 @@ use crate::{
     capability::{
         ConversationCapability, ConversationRequest, EnglishLearningCapability,
         MediaTranslateCapability, MediaTranslateInput, MediaTranslateRequest,
+        SpeechSynthesisCapability, SpeechSynthesisRequest,
     },
-    channel::{InboundAudioMessage, InboundTextMessage, OutboundTextReply},
+    channel::{InboundAudioMessage, InboundTextMessage, OutboundAudioReply, OutboundTextReply},
     config::FeishuCallbackConfig,
     logging,
 };
 
-use super::FeishuBotClient;
+use super::{FeishuBotClient, estimate_audio_duration_ms};
 
 /// 处理一条统一入站文本消息，并通过飞书回复链路将结果回复回原消息。
 pub async fn handle_text_message_event(
@@ -54,6 +55,7 @@ pub async fn handle_audio_message_event(
     conversation: ConversationCapability,
     english_learning: EnglishLearningCapability,
     media_translate: MediaTranslateCapability,
+    speech_synthesis: SpeechSynthesisCapability,
     config: FeishuCallbackConfig,
     event: InboundAudioMessage,
 ) -> Result<()> {
@@ -183,6 +185,25 @@ pub async fn handle_audio_message_event(
         &reply.session_id,
         &reply.text,
     );
+
+    if speech_synthesis.is_configured() && should_send_english_audio_reply(&transcript, &reply.text)
+    {
+        if let Err(error) = send_english_audio_reply(
+            &client,
+            &speech_synthesis,
+            reply.channel,
+            &reply.reply_to_message_id,
+            &reply.session_id,
+            &reply.text,
+        )
+        .await
+        {
+            logging::log_channel_background_error(
+                reply.channel.as_str(),
+                &format!("failed to send synthesized english audio reply: {error}"),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -274,4 +295,136 @@ async fn build_audio_reply(
         response.answer
     };
     Ok(answer)
+}
+
+async fn send_english_audio_reply(
+    client: &FeishuBotClient,
+    speech_synthesis: &SpeechSynthesisCapability,
+    channel: crate::channel::ChannelKind,
+    reply_to_message_id: &str,
+    session_id: &str,
+    text: &str,
+) -> Result<()> {
+    let normalized_text = normalize_text_for_speech(text);
+    if normalized_text.is_empty() || !looks_like_english_text(&normalized_text) {
+        return Ok(());
+    }
+
+    let synthesized = speech_synthesis
+        .execute(SpeechSynthesisRequest {
+            text: normalized_text,
+            model: None,
+            voice: None,
+            response_format: Some("opus".to_string()),
+            sample_rate: Some(48_000),
+            speed: None,
+            gain: None,
+            stream: Some(false),
+        })
+        .await?;
+    let audio_bytes = STANDARD
+        .decode(&synthesized.audio_base64)
+        .map_err(|error| anyhow::anyhow!("invalid synthesized audio base64: {error}"))?;
+    let duration_ms = estimate_audio_duration_ms(&synthesized.response_format, &audio_bytes);
+    let reply = OutboundAudioReply {
+        channel,
+        reply_to_message_id: reply_to_message_id.to_string(),
+        session_id: session_id.to_string(),
+        file_name: format!("english-reply.{}", synthesized.response_format),
+        file_format: synthesized.response_format,
+        content_type: synthesized.content_type,
+        bytes: audio_bytes,
+        duration_ms,
+    };
+    client.send_audio_reply(&reply).await?;
+    logging::log_channel_audio_replied(
+        reply.channel.as_str(),
+        &reply.reply_to_message_id,
+        &reply.session_id,
+        &reply.file_name,
+        &reply.file_format,
+        reply.duration_ms,
+    );
+    Ok(())
+}
+
+fn should_send_english_audio_reply(transcript: &str, answer: &str) -> bool {
+    looks_like_english_text(transcript)
+        && looks_like_english_text(&normalize_text_for_speech(answer))
+}
+
+fn normalize_text_for_speech(input: &str) -> String {
+    input
+        .replace("\r\n", "\n")
+        .replace("**", "")
+        .replace("__", "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn looks_like_english_text(input: &str) -> bool {
+    let mut latin_letters = 0usize;
+    let mut cjk_chars = 0usize;
+    let mut words = 0usize;
+    let mut in_word = false;
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphabetic() {
+            latin_letters += 1;
+            if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+            if ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+                cjk_chars += 1;
+            }
+        }
+    }
+
+    latin_letters >= 12 && words >= 3 && latin_letters > cjk_chars * 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        looks_like_english_text, normalize_text_for_speech, should_send_english_audio_reply,
+    };
+
+    #[test]
+    fn detects_english_text_heuristically() {
+        assert!(looks_like_english_text(
+            "President Trump is engaging in a blend of diplomacy and diversions."
+        ));
+        assert!(!looks_like_english_text(
+            "总统正在进行外交与消遣的混合活动。"
+        ));
+    }
+
+    #[test]
+    fn normalizes_multiline_markdownish_text_for_speech() {
+        assert_eq!(
+            normalize_text_for_speech("**Hello**\n\nThis is  a test.\n"),
+            "Hello This is a test."
+        );
+    }
+
+    #[test]
+    fn only_sends_audio_reply_for_english_transcript_and_answer() {
+        assert!(should_send_english_audio_reply(
+            "How can I improve my pronunciation today?",
+            "Try reading the focus sentence one more time."
+        ));
+        assert!(!should_send_english_audio_reply(
+            "How can I improve my pronunciation today?",
+            "你可以再读一遍重点句子。"
+        ));
+    }
 }

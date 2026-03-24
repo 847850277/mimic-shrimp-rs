@@ -6,8 +6,10 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     EnglishLearningConfig, ExecCommandToolConfig, FeishuCallbackConfig, FormConfig, LlmConfig,
-    LlmProvider, MediaTranslateConfig,
-    env::{first_env, parse_bool_env, parse_csv_env, parse_u64_env, parse_usize_env},
+    LlmProvider, MediaTranslateConfig, SpeechSynthesisConfig,
+    env::{
+        first_env, parse_bool_env, parse_csv_env, parse_f32_env, parse_u64_env, parse_usize_env,
+    },
 };
 
 /// 应用总配置，聚合了服务自身、模型、通道和工具相关配置。
@@ -20,6 +22,7 @@ pub struct AppConfig {
     pub llm: LlmConfig,
     pub forms: FormConfig,
     pub media_translate: MediaTranslateConfig,
+    pub speech_synthesis: SpeechSynthesisConfig,
     pub english_learning: EnglishLearningConfig,
     pub feishu_callback: FeishuCallbackConfig,
     pub exec_command_tool: ExecCommandToolConfig,
@@ -105,6 +108,37 @@ impl AppConfig {
                 .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
                 model: std::env::var("MEDIA_TRANSLATE_MODEL")
                     .unwrap_or_else(|_| "qwen3-livetranslate-flash".to_string()),
+            },
+            speech_synthesis: SpeechSynthesisConfig {
+                api_key: first_env(&["SPEECH_SYNTHESIS_API_KEY", "SILICONFLOW_API_KEY"]),
+                base_url: first_env(&["SPEECH_SYNTHESIS_BASE_URL", "SILICONFLOW_BASE_URL"])
+                    .unwrap_or_else(|| "https://api.siliconflow.cn/v1".to_string()),
+                model: std::env::var("SPEECH_SYNTHESIS_MODEL")
+                    .unwrap_or_else(|_| "MOSS-TTSD-v0.5".to_string()),
+                voice: std::env::var("SPEECH_SYNTHESIS_VOICE")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| Some("alex".to_string())),
+                response_format: std::env::var("SPEECH_SYNTHESIS_RESPONSE_FORMAT")
+                    .unwrap_or_else(|_| "mp3".to_string()),
+                sample_rate: match std::env::var("SPEECH_SYNTHESIS_SAMPLE_RATE") {
+                    Ok(raw) => Some(
+                        raw.parse::<u32>().with_context(|| {
+                            format!("invalid SPEECH_SYNTHESIS_SAMPLE_RATE: {raw}")
+                        })?,
+                    ),
+                    Err(_) => None,
+                },
+                speed: parse_f32_env("SPEECH_SYNTHESIS_SPEED", 1.0).with_context(|| {
+                    "invalid SPEECH_SYNTHESIS_SPEED, expected float".to_string()
+                })?,
+                gain: parse_f32_env("SPEECH_SYNTHESIS_GAIN", 0.0).with_context(|| {
+                    "invalid SPEECH_SYNTHESIS_GAIN, expected float".to_string()
+                })?,
+                stream: parse_bool_env("SPEECH_SYNTHESIS_STREAM", false).with_context(|| {
+                    "invalid SPEECH_SYNTHESIS_STREAM, expected true/false".to_string()
+                })?,
             },
             english_learning: EnglishLearningConfig {
                 enabled: parse_bool_env("ENGLISH_LEARNING_ENABLED", true).with_context(|| {

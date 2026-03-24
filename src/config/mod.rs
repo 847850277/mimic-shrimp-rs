@@ -8,6 +8,7 @@ mod form;
 mod learning;
 mod llm;
 mod media;
+mod speech;
 mod tool;
 
 pub use app::AppConfig;
@@ -16,4 +17,5 @@ pub use form::FormConfig;
 pub use learning::EnglishLearningConfig;
 pub use llm::{LlmConfig, LlmProvider};
 pub use media::MediaTranslateConfig;
+pub use speech::SpeechSynthesisConfig;
 pub use tool::ExecCommandToolConfig;

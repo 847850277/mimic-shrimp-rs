@@ -75,6 +75,26 @@ pub(crate) struct MediaTranslateRequest {
     pub(crate) include_usage: bool,
 }
 
+/// `/speech/synthesize` 接口的请求体。
+#[derive(Debug, Deserialize)]
+pub(crate) struct SpeechSynthesisRequest {
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) voice: Option<String>,
+    #[serde(default)]
+    pub(crate) response_format: Option<String>,
+    #[serde(default)]
+    pub(crate) sample_rate: Option<u32>,
+    #[serde(default)]
+    pub(crate) speed: Option<f32>,
+    #[serde(default)]
+    pub(crate) gain: Option<f32>,
+    #[serde(default)]
+    pub(crate) stream: Option<bool>,
+}
+
 /// 错误响应外层结构。
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorBody {
@@ -130,6 +150,19 @@ pub(crate) struct MediaTranslateResponse {
     pub(crate) audio_base64: Option<String>,
     pub(crate) audio_id: Option<String>,
     pub(crate) usage: Option<Value>,
+}
+
+/// `/speech/synthesize` 接口的成功响应体。
+#[derive(Debug, Serialize)]
+pub(crate) struct SpeechSynthesisResponse {
+    pub(crate) ok: bool,
+    pub(crate) model: String,
+    pub(crate) voice: String,
+    pub(crate) response_format: String,
+    pub(crate) content_type: String,
+    pub(crate) audio_base64: String,
+    pub(crate) byte_len: usize,
+    pub(crate) trace_id: Option<String>,
 }
 
 /// 健康检查接口的响应体。

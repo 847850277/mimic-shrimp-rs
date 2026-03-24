@@ -6,5 +6,5 @@ mod im;
 mod service;
 
 pub use callback::{FeishuCallbackErrorKind, extract_event_type, process_callback};
-pub use im::{FeishuBotClient, parse_message_event};
+pub use im::{FeishuBotClient, estimate_audio_duration_ms, parse_message_event};
 pub use service::{callback_ack, handle_audio_message_event, handle_text_message_event};

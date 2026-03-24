@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use reqwest::{
     Client, StatusCode,
     header::{CONTENT_DISPOSITION, CONTENT_TYPE},
+    multipart::{Form, Part},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -11,7 +12,7 @@ use serde_json::{Value, json};
 use crate::{
     channel::{
         ChannelKind, InboundAudioMessage, InboundMessageParseOutcome, InboundTextMessage,
-        OutboundTextReply,
+        OutboundAudioReply, OutboundTextReply,
     },
     config::FeishuCallbackConfig,
     logging,
@@ -37,6 +38,7 @@ struct TenantAccessTokenResponse {
 struct FeishuApiResponse {
     code: i64,
     msg: Option<String>,
+    data: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +114,64 @@ impl FeishuBotClient {
         if payload.code != 0 {
             bail!(
                 "feishu reply api returned code {}: {}",
+                payload.code,
+                payload.msg.unwrap_or_else(|| "unknown error".to_string())
+            );
+        }
+        logging::log_channel_reply_success(reply.channel.as_str(), &reply.reply_to_message_id);
+        Ok(())
+    }
+
+    /// 发送统一出站音频回复，会先上传音频资源，再回复音频消息。
+    pub async fn send_audio_reply(&self, reply: &OutboundAudioReply) -> Result<()> {
+        let token = self.tenant_access_token().await?;
+        logging::log_channel_audio_reply_stage(
+            reply.channel.as_str(),
+            &reply.reply_to_message_id,
+            "file_upload",
+            &reply.file_name,
+            &reply.file_format,
+            reply.bytes.len(),
+            reply.duration_ms,
+        );
+        let file_key = self.upload_audio_file(&token, reply).await?;
+        let url = format!(
+            "{}/open-apis/im/v1/messages/{}/reply",
+            self.config.open_base_url.trim_end_matches('/'),
+            reply.reply_to_message_id
+        );
+        logging::log_channel_audio_reply_stage(
+            reply.channel.as_str(),
+            &reply.reply_to_message_id,
+            "reply_api",
+            &reply.file_name,
+            &reply.file_format,
+            reply.bytes.len(),
+            reply.duration_ms,
+        );
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(token)
+            .json(&build_audio_reply_request(&file_key))
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            bail!(
+                "feishu audio reply api returned HTTP {}: {}",
+                status.as_u16(),
+                body
+            );
+        }
+
+        let payload: FeishuApiResponse = serde_json::from_str(&body).map_err(|error| {
+            anyhow!("invalid feishu audio reply api response: {error}; body={body}")
+        })?;
+        if payload.code != 0 {
+            bail!(
+                "feishu audio reply api returned code {}: {}",
                 payload.code,
                 payload.msg.unwrap_or_else(|| "unknown error".to_string())
             );
@@ -240,6 +300,64 @@ impl FeishuBotClient {
         }
 
         bail!("feishu message resource api returned invalid request params for all candidate types")
+    }
+
+    async fn upload_audio_file(&self, token: &str, reply: &OutboundAudioReply) -> Result<String> {
+        let url = format!(
+            "{}/open-apis/im/v1/files",
+            self.config.open_base_url.trim_end_matches('/')
+        );
+        let mut form = Form::new()
+            .text(
+                "file_type",
+                feishu_audio_file_type(&reply.file_format).to_string(),
+            )
+            .text("file_name", reply.file_name.clone());
+        if let Some(duration_ms) = reply.duration_ms {
+            form = form.text("duration", duration_ms.to_string());
+        }
+
+        let part = Part::bytes(reply.bytes.clone())
+            .file_name(reply.file_name.clone())
+            .mime_str(&reply.content_type)
+            .map_err(|error| anyhow!("invalid audio content type for upload: {error}"))?;
+        form = form.part("file", part);
+
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(token)
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            bail!(
+                "feishu file upload api returned HTTP {}: {}",
+                status.as_u16(),
+                body
+            );
+        }
+
+        let payload: FeishuApiResponse = serde_json::from_str(&body).map_err(|error| {
+            anyhow!("invalid feishu file upload response: {error}; body={body}")
+        })?;
+        if payload.code != 0 {
+            bail!(
+                "feishu file upload api returned code {}: {}",
+                payload.code,
+                payload.msg.unwrap_or_else(|| "unknown error".to_string())
+            );
+        }
+
+        payload
+            .data
+            .as_ref()
+            .and_then(|data| data.get("file_key"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow!("file_key missing in feishu file upload response"))
     }
 }
 
@@ -554,6 +672,14 @@ fn build_reply_request(text: &str) -> Value {
     })
 }
 
+/// 构造飞书音频回复请求体。
+fn build_audio_reply_request(file_key: &str) -> Value {
+    json!({
+        "content": json!({ "file_key": file_key }).to_string(),
+        "msg_type": "audio",
+    })
+}
+
 /// 把模型回复整理成更适合飞书 IM 展示的纯文本格式。
 fn format_reply_text_for_feishu(input: &str) -> String {
     let mut text = input.replace("\r\n", "\n");
@@ -582,6 +708,67 @@ fn format_reply_text_for_feishu(input: &str) -> String {
     } else {
         text
     }
+}
+
+fn feishu_audio_file_type(format: &str) -> &'static str {
+    match normalize_audio_format(format) {
+        "opus" | "ogg" => "opus",
+        _ => "stream",
+    }
+}
+
+/// 估算 Ogg/Opus 音频时长，用于飞书上传音频时补充 duration 字段。
+pub fn estimate_audio_duration_ms(format: &str, bytes: &[u8]) -> Option<u64> {
+    match normalize_audio_format(format) {
+        "ogg" | "opus" => estimate_ogg_opus_duration_ms(bytes),
+        "wav" => estimate_wav_duration_ms(bytes),
+        _ => None,
+    }
+}
+
+fn estimate_ogg_opus_duration_ms(bytes: &[u8]) -> Option<u64> {
+    let mut cursor = 0usize;
+    let mut last_granule_position = None;
+
+    while cursor + 27 <= bytes.len() {
+        if &bytes[cursor..cursor + 4] != b"OggS" {
+            return None;
+        }
+        let segment_count = *bytes.get(cursor + 26)? as usize;
+        let header_len = 27usize.checked_add(segment_count)?;
+        if cursor + header_len > bytes.len() {
+            return None;
+        }
+        let page_body_len: usize = bytes[cursor + 27..cursor + header_len]
+            .iter()
+            .map(|segment| *segment as usize)
+            .sum();
+        let page_len = header_len.checked_add(page_body_len)?;
+        if cursor + page_len > bytes.len() {
+            return None;
+        }
+        let granule_slice: [u8; 8] = bytes[cursor + 6..cursor + 14].try_into().ok()?;
+        let granule_position = u64::from_le_bytes(granule_slice);
+        if granule_position != u64::MAX {
+            last_granule_position = Some(granule_position);
+        }
+        cursor += page_len;
+    }
+
+    let total_samples = last_granule_position?;
+    Some(((u128::from(total_samples) * 1000) / 48_000) as u64)
+}
+
+fn estimate_wav_duration_ms(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let byte_rate = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
+    let data_size = u32::from_le_bytes(bytes[40..44].try_into().ok()?);
+    if byte_rate == 0 {
+        return None;
+    }
+    Some(((u128::from(data_size) * 1000) / u128::from(byte_rate)) as u64)
 }
 
 #[cfg(test)]
@@ -730,11 +917,32 @@ mod tests {
     }
 
     #[test]
+    fn builds_audio_reply_request_body() {
+        assert_eq!(
+            build_audio_reply_request("file_v3_audio_key"),
+            json!({
+                "content": "{\"file_key\":\"file_v3_audio_key\"}",
+                "msg_type": "audio"
+            })
+        );
+    }
+
+    #[test]
     fn formats_reply_text_for_feishu_as_plain_text() {
         assert_eq!(
             format_reply_text_for_feishu("**会话历史**\n\n\n- 第一条\n- 第二条\n"),
             "会话历史\n\n- 第一条\n- 第二条"
         );
+    }
+
+    #[test]
+    fn estimates_ogg_opus_duration_from_last_granule_position() {
+        let bytes = [
+            b'O', b'g', b'g', b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 1, 1, 0x41, b'O', b'g', b'g', b'S', 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0x42,
+        ];
+        assert_eq!(estimate_audio_duration_ms("opus", &bytes), Some(1000));
     }
 
     #[test]

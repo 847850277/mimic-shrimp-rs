@@ -127,6 +127,45 @@ pub fn log_http_media_translate_failed(error_message: &str) {
     error!(error = %error_message, "media translate request failed");
 }
 
+/// 记录 `/speech/synthesize` 请求的入口信息。
+pub fn log_http_speech_synthesis_request(
+    model: Option<&str>,
+    voice: Option<&str>,
+    response_format: Option<&str>,
+    text: &str,
+) {
+    info!(
+        model = ?model,
+        voice = ?voice,
+        response_format = ?response_format,
+        text_preview = %preview_text(text, 120),
+        "received speech synthesis request"
+    );
+}
+
+/// 记录 `/speech/synthesize` 请求成功完成时的摘要信息。
+pub fn log_http_speech_synthesis_complete(
+    model: &str,
+    voice: &str,
+    response_format: &str,
+    byte_len: usize,
+    trace_id: Option<&str>,
+) {
+    info!(
+        model = %model,
+        voice = %voice,
+        response_format = %response_format,
+        byte_len,
+        trace_id = ?trace_id,
+        "completed speech synthesis request"
+    );
+}
+
+/// 记录 `/speech/synthesize` 请求失败的情况。
+pub fn log_http_speech_synthesis_failed(error_message: &str) {
+    error!(error = %error_message, "speech synthesis request failed");
+}
+
 /// 记录直接工具调用接口的入口信息。
 pub fn log_http_tool_invoke_request(session_id: &str, user_id: &str, tool: &str, args: &Value) {
     info!(

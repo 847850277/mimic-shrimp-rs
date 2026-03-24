@@ -6,11 +6,15 @@ mod extraction;
 mod learning;
 mod media_translate;
 mod sessions;
+mod speech;
 mod tools;
 
 use std::sync::Arc;
 
-use crate::{config::MediaTranslateConfig, engine::ToolCallEngine};
+use crate::{
+    config::{MediaTranslateConfig, SpeechSynthesisConfig},
+    engine::ToolCallEngine,
+};
 
 pub use conversation::{ConversationCapability, ConversationRequest};
 pub use extraction::{StructuredExtractionCapability, StructuredExtractionRequest};
@@ -19,6 +23,7 @@ pub use media_translate::{
     MediaTranslateAudioOutput, MediaTranslateCapability, MediaTranslateInput, MediaTranslateRequest,
 };
 pub use sessions::SessionCapability;
+pub use speech::{SpeechSynthesisCapability, SpeechSynthesisRequest};
 pub use tools::{DirectToolInvocationRequest, ToolCapability};
 
 /// 能力集合入口，聚合当前应用暴露的聊天、会话查询和工具调用能力。
@@ -29,6 +34,8 @@ pub struct CapabilityHub {
     extraction: StructuredExtractionCapability,
     /// 媒体翻译能力，独立接入阿里百炼媒体翻译接口。
     media_translate: MediaTranslateCapability,
+    /// 语音合成能力，独立接入 SiliconFlow TTS 接口。
+    speech_synthesis: SpeechSynthesisCapability,
     /// 每日英语学习能力，负责新闻抓取、学习卡片生成和学习口令处理。
     english_learning: EnglishLearningCapability,
     sessions: SessionCapability,
@@ -41,12 +48,14 @@ impl CapabilityHub {
         engine: Arc<ToolCallEngine>,
         extraction: StructuredExtractionCapability,
         media_translate_config: MediaTranslateConfig,
+        speech_synthesis_config: SpeechSynthesisConfig,
         english_learning: EnglishLearningCapability,
     ) -> Self {
         Self {
             conversation: ConversationCapability::new(engine.clone()),
             extraction: extraction.clone(),
             media_translate: MediaTranslateCapability::new(media_translate_config),
+            speech_synthesis: SpeechSynthesisCapability::new(speech_synthesis_config),
             english_learning,
             sessions: SessionCapability::new(engine.clone()),
             tools: ToolCapability::new(engine),
@@ -66,6 +75,11 @@ impl CapabilityHub {
     /// 返回媒体翻译能力。
     pub fn media_translate(&self) -> &MediaTranslateCapability {
         &self.media_translate
+    }
+
+    /// 返回语音合成能力。
+    pub fn speech_synthesis(&self) -> &SpeechSynthesisCapability {
+        &self.speech_synthesis
     }
 
     /// 返回每日英语学习能力。

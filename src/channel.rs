@@ -7,5 +7,5 @@ mod types;
 
 pub use types::{
     ChannelKind, InboundAudioMessage, InboundMessageParseOutcome, InboundTextMessage,
-    OutboundTextReply,
+    OutboundAudioReply, OutboundTextReply,
 };

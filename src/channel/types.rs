@@ -69,3 +69,17 @@ pub struct OutboundTextReply {
     pub session_id: String,
     pub text: String,
 }
+
+/// 统一的出站音频回复模型。
+/// 当前先覆盖飞书音频回发所需的最小字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundAudioReply {
+    pub channel: ChannelKind,
+    pub reply_to_message_id: String,
+    pub session_id: String,
+    pub file_name: String,
+    pub file_format: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+    pub duration_ms: Option<u64>,
+}

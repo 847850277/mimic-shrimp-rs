@@ -233,3 +233,45 @@ pub fn log_channel_text_replied(channel: &str, message_id: &str, session_id: &st
         "replied to channel text message"
     );
 }
+
+/// 记录通道音频回复链路中的阶段性动作。
+pub fn log_channel_audio_reply_stage(
+    channel: &str,
+    message_id: &str,
+    stage: &str,
+    file_name: &str,
+    format: &str,
+    byte_len: usize,
+    duration_ms: Option<u64>,
+) {
+    info!(
+        channel = %channel,
+        message_id = %message_id,
+        stage = %stage,
+        file_name = %file_name,
+        format = %format,
+        byte_len,
+        duration_ms = ?duration_ms,
+        "requesting channel audio reply"
+    );
+}
+
+/// 记录通道音频消息已经成功回复给用户。
+pub fn log_channel_audio_replied(
+    channel: &str,
+    message_id: &str,
+    session_id: &str,
+    file_name: &str,
+    format: &str,
+    duration_ms: Option<u64>,
+) {
+    info!(
+        channel = %channel,
+        message_id = %message_id,
+        session_id = %session_id,
+        file_name = %file_name,
+        format = %format,
+        duration_ms = ?duration_ms,
+        "replied to channel audio message"
+    );
+}

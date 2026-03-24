@@ -39,6 +39,16 @@ pub(crate) fn parse_usize_env(key: &str, default: usize) -> Result<usize> {
     }
 }
 
+/// 解析 `f32` 类型环境变量。
+pub(crate) fn parse_f32_env(key: &str, default: f32) -> Result<f32> {
+    match std::env::var(key) {
+        Ok(raw) => raw
+            .parse::<f32>()
+            .map_err(|_| anyhow!("unsupported float value: {raw}")),
+        Err(_) => Ok(default),
+    }
+}
+
 /// 解析逗号分隔的字符串列表环境变量。
 pub(crate) fn parse_csv_env(key: &str) -> Vec<String> {
     std::env::var(key)

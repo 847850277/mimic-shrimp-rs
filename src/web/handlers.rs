@@ -12,7 +12,7 @@ use crate::{
     capability::{
         ConversationRequest, DirectToolInvocationRequest, MediaTranslateAudioOutput,
         MediaTranslateInput, MediaTranslateRequest as CapabilityMediaTranslateRequest,
-        StructuredExtractionRequest,
+        SpeechSynthesisRequest as CapabilitySpeechSynthesisRequest, StructuredExtractionRequest,
     },
     channel::InboundMessageParseOutcome,
     channel::feishu::{
@@ -28,8 +28,8 @@ use super::{
     state::app_state,
     types::{
         ChatRequest, FormExtractRequest, FormExtractResponse, FormInvalidFieldResponse,
-        HealthResponse, MediaTranslateRequest, MediaTranslateResponse, ToolInvokeRequest,
-        ToolInvokeResponse,
+        HealthResponse, MediaTranslateRequest, MediaTranslateResponse, SpeechSynthesisRequest,
+        SpeechSynthesisResponse, ToolInvokeRequest, ToolInvokeResponse,
     },
     util::{merge_action_into_args, render_error},
 };
@@ -193,6 +193,7 @@ pub(crate) async fn feishu_callback(req: &mut Request, depot: &mut Depot, res: &
                             background_state.capabilities.conversation().clone(),
                             background_state.capabilities.english_learning().clone(),
                             background_state.capabilities.media_translate().clone(),
+                            background_state.capabilities.speech_synthesis().clone(),
                             background_state.config.feishu_callback.clone(),
                             event,
                         )
@@ -589,6 +590,76 @@ pub(crate) async fn translate_media(req: &mut Request, depot: &mut Depot, res: &
                 res,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "media_translate_failed",
+                &error.to_string(),
+            );
+        }
+    }
+}
+
+/// 处理文本转语音请求，独立调用 SiliconFlow 语音合成接口。
+#[handler]
+pub(crate) async fn synthesize_speech(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let body = match req.parse_json::<SpeechSynthesisRequest>().await {
+        Ok(value) => value,
+        Err(error) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+
+    logging::log_http_speech_synthesis_request(
+        body.model.as_deref(),
+        body.voice.as_deref(),
+        body.response_format.as_deref(),
+        &body.text,
+    );
+
+    let state = app_state(depot);
+    match state
+        .capabilities
+        .speech_synthesis()
+        .execute(CapabilitySpeechSynthesisRequest {
+            text: body.text,
+            model: body.model,
+            voice: body.voice,
+            response_format: body.response_format,
+            sample_rate: body.sample_rate,
+            speed: body.speed,
+            gain: body.gain,
+            stream: body.stream,
+        })
+        .await
+    {
+        Ok(output) => {
+            logging::log_http_speech_synthesis_complete(
+                &output.model,
+                &output.voice,
+                &output.response_format,
+                output.byte_len,
+                output.trace_id.as_deref(),
+            );
+            res.render(Json(SpeechSynthesisResponse {
+                ok: true,
+                model: output.model,
+                voice: output.voice,
+                response_format: output.response_format,
+                content_type: output.content_type,
+                audio_base64: output.audio_base64,
+                byte_len: output.byte_len,
+                trace_id: output.trace_id,
+            }));
+        }
+        Err(error) => {
+            logging::log_http_speech_synthesis_failed(&error.to_string());
+            render_error(
+                res,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "speech_synthesis_failed",
                 &error.to_string(),
             );
         }

@@ -58,6 +58,7 @@ async fn main() -> Result<()> {
         engine,
         extraction,
         config.media_translate.clone(),
+        config.speech_synthesis.clone(),
         english_learning,
     );
 
