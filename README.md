@@ -40,13 +40,9 @@
 
 下面这组演示覆盖了“开始今天的英语学习”后的典型交互过程，包括卡片下发、重点句追问、继续出题，以及在同一会话里继续完成练习。
 
-如果你的 Markdown 渲染器支持 HTML5 视频，可以直接在这里播放完整演示：
+下面是可直接在 README 中播放的 2 倍速 GIF 演示；如果你想看更清晰的原始录屏，也可以打开[视频演示（MP4）](images/54346.MP4)。
 
-<video controls preload="metadata" width="100%">
-  <source src="images/54346.MP4" type="video/mp4" />
-  当前阅读器不支持内嵌视频，可直接打开
-  <a href="images/54346.MP4">视频演示（MP4）</a>。
-</video>
+![飞书英语学习完整流程演示（2 倍速）](images/54346.gif)
 
 ![飞书英语学习对话示例 1](images/1.png)
 
