@@ -1,4 +1,6 @@
-//! 工具子模块负责引擎内部的公共辅助函数，例如内容抽取、预览文本和签名生成。
+//! 工具子模块负责引擎内部的公共辅助函数，例如内容抽取、上下文裁剪、预览文本和签名生成。
+
+use std::collections::VecDeque;
 
 use adk_rust::{Content, FinishReason, Part};
 use serde_json::Value;
@@ -16,6 +18,37 @@ pub(crate) fn build_model_tool_call_content(function_call: &FunctionCallEnvelope
             id: Some(function_call.function_call_id.clone()),
             thought_signature: None,
         }],
+    }
+}
+
+/// 基于完整 transcript 构造实际发送给 LLM 的上下文窗口。
+/// 当前策略会优先保留首条 `system` 消息，再保留尾部最近的若干条消息，
+/// 以控制单次模型调用的总消息数，而不裁剪底层会话存储。
+pub(crate) fn build_llm_context_window(
+    transcript: &VecDeque<Content>,
+    max_messages: usize,
+) -> Vec<Content> {
+    if transcript.is_empty() || max_messages == 0 {
+        return Vec::new();
+    }
+
+    let contents = transcript.iter().cloned().collect::<Vec<_>>();
+    if contents.len() <= max_messages {
+        return contents;
+    }
+
+    let first = contents.first().cloned().expect("non-empty transcript");
+    if first.role == "system" {
+        if max_messages == 1 {
+            return vec![first];
+        }
+        let tail_count = max_messages - 1;
+        let mut window = Vec::with_capacity(max_messages);
+        window.push(first);
+        window.extend_from_slice(&contents[contents.len() - tail_count..]);
+        window
+    } else {
+        contents[contents.len() - max_messages..].to_vec()
     }
 }
 

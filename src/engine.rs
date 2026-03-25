@@ -37,9 +37,9 @@ pub use types::{
 pub(crate) use state::TurnState;
 pub(crate) use types::{ActionCandidate, FunctionCallEnvelope, PlannedAction, SelectedAction};
 pub(crate) use util::{
-    append_stream_parts, build_model_tool_call_content, candidate_action_type, candidate_preview,
-    extract_function_calls, extract_text, finish_reason_to_string, preview_json, preview_text,
-    tool_call_signature,
+    append_stream_parts, build_llm_context_window, build_model_tool_call_content,
+    candidate_action_type, candidate_preview, extract_function_calls, extract_text,
+    finish_reason_to_string, preview_json, preview_text, tool_call_signature,
 };
 
 pub(crate) const DEFAULT_PLANNER_CANDIDATE_LIMIT: usize = 3;

@@ -256,7 +256,7 @@ async fn merges_streamed_text_parts_without_inserting_newlines() {
 }
 
 #[tokio::test]
-async fn only_injects_recent_context_messages_into_transcript() {
+async fn only_injects_recent_context_window_into_llm_request() {
     let llm = Arc::new(ScriptedLlm::new(vec![LlmResponse::new(
         Content::new("model").with_text("done"),
     )]));
@@ -294,7 +294,7 @@ async fn only_injects_recent_context_messages_into_transcript() {
 
     let requests = llm.recorded_requests();
     let first_request = requests.first().expect("llm request recorded");
-    assert_eq!(first_request.contents.len(), 22);
+    assert_eq!(first_request.contents.len(), 20);
 
     let first_history = first_request.contents[1]
         .parts
@@ -304,7 +304,7 @@ async fn only_injects_recent_context_messages_into_transcript() {
             _ => None,
         })
         .expect("history text");
-    let last_history = first_request.contents[20]
+    let last_history = first_request.contents[18]
         .parts
         .iter()
         .find_map(|part| match part {
@@ -312,9 +312,18 @@ async fn only_injects_recent_context_messages_into_transcript() {
             _ => None,
         })
         .expect("history text");
+    let current_message = first_request.contents[19]
+        .parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("current text");
 
-    assert_eq!(first_history, "history-5");
+    assert_eq!(first_history, "history-7");
     assert_eq!(last_history, "history-24");
+    assert_eq!(current_message, "current");
 }
 
 #[tokio::test]

@@ -29,14 +29,7 @@ impl ToolCallEngine {
         let system_prompt = self.build_planner_system_prompt(&base_system_prompt);
         let max_iterations = request.max_iterations.unwrap_or(self.max_iterations);
         let user_content = Content::new("user").with_text(request.message.clone());
-        let full_prior_message_count = self
-            .session_store
-            .session_message_count(&request.session_id)
-            .await;
-        let prior_messages = self
-            .session_store
-            .snapshot_recent(&request.session_id, Some(self.max_context_messages))
-            .await;
+        let prior_messages = self.session_store.snapshot(&request.session_id).await;
         let prior_message_count = prior_messages.len();
 
         let mut transcript = VecDeque::new();
@@ -60,7 +53,6 @@ impl ToolCallEngine {
             max_tool_calls_per_turn = self.max_tool_calls_per_turn,
             error_budget = self.error_budget,
             persisted_history = request.persist,
-            full_prior_message_count,
             prior_message_count,
             "starting iterative plan-execute turn"
         );
@@ -78,13 +70,14 @@ impl ToolCallEngine {
                 user_id = %request.user_id,
                 iteration = iterations,
                 transcript_messages = transcript.len(),
+                llm_context_message_limit = self.max_context_messages,
                 tool_calls_executed = state.tool_calls_executed,
                 "planning next action"
             );
 
-            let response = self
-                .collect_llm_response(transcript.make_contiguous().to_vec())
-                .await?;
+            let llm_contents =
+                super::build_llm_context_window(&transcript, self.max_context_messages);
+            let response = self.collect_llm_response(llm_contents).await?;
             finish_reason = response
                 .finish_reason
                 .as_ref()
@@ -94,7 +87,7 @@ impl ToolCallEngine {
                 .content
                 .unwrap_or_else(|| Content::new("model").with_text(""));
             let candidates =
-                self.plan_candidates(&request, &model_content, full_prior_message_count > 0);
+                self.plan_candidates(&request, &model_content, prior_message_count > 0);
             let selection = self.select_action(candidates, &state);
 
             info!(
