@@ -55,6 +55,15 @@ impl SessionStore {
             .unwrap_or_default()
     }
 
+    /// 读取指定会话最近 N 条原始消息，用于控制送入模型的上下文窗口。
+    pub async fn snapshot_recent(&self, session_id: &str, limit: Option<usize>) -> Vec<Content> {
+        let guard = self.inner.read().await;
+        guard
+            .get(session_id)
+            .map(|entry| limit_contents(entry.messages.as_slice(), limit))
+            .unwrap_or_default()
+    }
+
     pub async fn session_message_count(&self, session_id: &str) -> usize {
         let guard = self.inner.read().await;
         guard
@@ -94,6 +103,13 @@ pub fn limit_messages(messages: &[Content], limit: Option<usize>) -> Vec<Message
         _ => messages,
     };
     slice.iter().map(MessageView::from).collect()
+}
+
+fn limit_contents(messages: &[Content], limit: Option<usize>) -> Vec<Content> {
+    match limit {
+        Some(value) if value < messages.len() => messages[messages.len() - value..].to_vec(),
+        _ => messages.to_vec(),
+    }
 }
 
 impl From<&Content> for MessageView {

@@ -53,6 +53,7 @@ async fn main() -> Result<()> {
         session_store,
         config.default_system_prompt.clone(),
         config.max_iterations,
+        config.max_context_messages,
     ));
     let capabilities = CapabilityHub::new(
         engine,

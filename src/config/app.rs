@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub server_addr: String,
     pub default_system_prompt: String,
     pub max_iterations: usize,
+    pub max_context_messages: usize,
     pub llm: LlmConfig,
     pub forms: FormConfig,
     pub media_translate: MediaTranslateConfig,
@@ -51,6 +52,16 @@ impl AppConfig {
             bail!("MAX_TOOL_ITERATIONS must be greater than 0");
         }
 
+        let max_context_messages = match std::env::var("MAX_CONTEXT_MESSAGES") {
+            Ok(raw) => raw
+                .parse::<usize>()
+                .with_context(|| format!("invalid MAX_CONTEXT_MESSAGES: {raw}"))?,
+            Err(_) => 20,
+        };
+        if max_context_messages == 0 {
+            bail!("MAX_CONTEXT_MESSAGES must be greater than 0");
+        }
+
         let english_learning_schedule_hour = match std::env::var("ENGLISH_LEARNING_SCHEDULE_HOUR") {
             Ok(raw) => raw
                 .parse::<u32>()
@@ -80,6 +91,7 @@ impl AppConfig {
                 "You are a tool-calling assistant inspired by OpenClaw. When deterministic work or external state is needed, call the available tools first, then synthesize a concise final answer.".to_string()
             }),
             max_iterations,
+            max_context_messages,
             llm: LlmConfig {
                 provider,
                 model,

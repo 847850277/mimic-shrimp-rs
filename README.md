@@ -166,6 +166,7 @@ docker push your-registry/rs-tool-call:latest
 - `LLM_PROVIDER=siliconflow` 按 SiliconFlow 的 OpenAI 兼容接口处理，默认地址是 `https://api.siliconflow.cn/v1`。
 - 如果你想切换到 SiliconFlow 的其他 GLM 型号，直接覆盖 `LLM_MODEL`，例如 `Pro/zai-org/GLM-5`。
 - `LLM_PROVIDER=glm` 现在按阿里百炼的 OpenAI 兼容接口处理。
+- 默认只会把最近 `20` 条历史消息重新带入模型上下文，可通过 `MAX_CONTEXT_MESSAGES` 调整。
 - 默认 `base_url` 是北京地域 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
 - 你也可以用 `DASHSCOPE_BASE_URL`、`BAILIAN_BASE_URL`、`GLM_BASE_URL` 覆盖地域 endpoint。
 - API key 支持 `DASHSCOPE_API_KEY`、`BAILIAN_API_KEY`、`GLM_API_KEY`、`LLM_API_KEY`。

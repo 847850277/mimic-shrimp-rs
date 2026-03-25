@@ -56,6 +56,7 @@ pub struct ToolCallEngine {
     session_store: SessionStore,
     default_system_prompt: String,
     max_iterations: usize,
+    max_context_messages: usize,
     max_tool_calls_per_turn: usize,
     planner_candidate_limit: usize,
     error_budget: usize,
@@ -70,6 +71,7 @@ impl ToolCallEngine {
         session_store: SessionStore,
         default_system_prompt: String,
         max_iterations: usize,
+        max_context_messages: usize,
     ) -> Self {
         Self {
             app_name,
@@ -78,6 +80,7 @@ impl ToolCallEngine {
             session_store,
             default_system_prompt,
             max_iterations,
+            max_context_messages,
             max_tool_calls_per_turn: max_iterations,
             planner_candidate_limit: DEFAULT_PLANNER_CANDIDATE_LIMIT,
             error_budget: DEFAULT_ERROR_BUDGET,

@@ -14,13 +14,19 @@ use crate::{
 
 struct ScriptedLlm {
     responses: Mutex<VecDeque<LlmResponse>>,
+    requests: Mutex<Vec<LlmRequest>>,
 }
 
 impl ScriptedLlm {
     fn new(responses: Vec<LlmResponse>) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
+            requests: Mutex::new(Vec::new()),
         }
+    }
+
+    fn recorded_requests(&self) -> Vec<LlmRequest> {
+        self.requests.lock().expect("scripted llm poisoned").clone()
     }
 }
 
@@ -32,9 +38,13 @@ impl Llm for ScriptedLlm {
 
     async fn generate_content(
         &self,
-        _req: LlmRequest,
+        req: LlmRequest,
         _stream: bool,
     ) -> adk_rust::Result<LlmResponseStream> {
+        self.requests
+            .lock()
+            .expect("scripted llm poisoned")
+            .push(req);
         let next = self
             .responses
             .lock()
@@ -98,6 +108,7 @@ async fn executes_iterative_plan_execute_loop_and_persists_turn() {
         store.clone(),
         "use tools".to_string(),
         4,
+        20,
     );
 
     let response = engine
@@ -165,6 +176,7 @@ async fn commits_only_one_tool_per_iteration_even_if_model_emits_multiple_calls(
         store,
         "use tools".to_string(),
         4,
+        20,
     );
 
     let response = engine
@@ -225,6 +237,7 @@ async fn merges_streamed_text_parts_without_inserting_newlines() {
         store,
         "use tools".to_string(),
         4,
+        20,
     );
 
     let response = engine
@@ -240,6 +253,68 @@ async fn merges_streamed_text_parts_without_inserting_newlines() {
         .expect("chat response");
 
     assert_eq!(response.answer, "根据会话历史，我看到 1 条记录。");
+}
+
+#[tokio::test]
+async fn only_injects_recent_context_messages_into_transcript() {
+    let llm = Arc::new(ScriptedLlm::new(vec![LlmResponse::new(
+        Content::new("model").with_text("done"),
+    )]));
+    let store = SessionStore::default();
+    let registry =
+        build_builtin_registry(store.clone(), disabled_exec_tool(), None).expect("registry");
+
+    let mut messages = Vec::new();
+    for index in 0..25 {
+        messages.push(Content::new("user").with_text(format!("history-{index}")));
+    }
+    store.append_many("main", messages).await;
+
+    let engine = ToolCallEngine::new(
+        "test-app".to_string(),
+        llm.clone(),
+        registry,
+        store,
+        "use tools".to_string(),
+        4,
+        20,
+    );
+
+    let _ = engine
+        .run_turn(ChatTurnRequest {
+            session_id: "main".to_string(),
+            user_id: "tester".to_string(),
+            message: "current".to_string(),
+            system_prompt: None,
+            max_iterations: Some(1),
+            persist: false,
+        })
+        .await
+        .expect("chat response");
+
+    let requests = llm.recorded_requests();
+    let first_request = requests.first().expect("llm request recorded");
+    assert_eq!(first_request.contents.len(), 22);
+
+    let first_history = first_request.contents[1]
+        .parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("history text");
+    let last_history = first_request.contents[20]
+        .parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("history text");
+
+    assert_eq!(first_history, "history-5");
+    assert_eq!(last_history, "history-24");
 }
 
 #[tokio::test]
@@ -291,6 +366,7 @@ async fn converges_after_successful_exec_command_results() {
         store,
         "use tools".to_string(),
         12,
+        20,
     );
 
     let response = engine
