@@ -34,13 +34,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/rs-tool-call /usr/local/bin/rs-tool-call
+COPY --from=builder /app/target/release/mimic-shrimp-rs /usr/local/bin/mimic-shrimp-rs
 COPY forms ./forms
 
 RUN mkdir -p /app/learning_data \
     && chown -R 65534:65534 /app
 
-ENV APP_NAME=rs-tool-call
+ENV APP_NAME=mimic-shrimp-rs
 ENV SERVER_ADDR=0.0.0.0:7878
 ENV RUST_LOG=info
 
@@ -48,4 +48,4 @@ EXPOSE 7878
 
 USER 65534:65534
 
-CMD ["rs-tool-call"]
+CMD ["mimic-shrimp-rs"]

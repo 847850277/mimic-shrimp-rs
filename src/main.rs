@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
 /// 初始化全局 tracing 日志配置。
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,rs_tool_call=debug"));
+        .unwrap_or_else(|_| EnvFilter::new("info,mimic_shrimp_rs=debug"));
     fmt()
         .with_env_filter(filter)
         .with_target(false)

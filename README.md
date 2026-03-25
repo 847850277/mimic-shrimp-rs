@@ -1,4 +1,4 @@
-# rs-tool-call
+# mimic-shrimp-rs
 
 一个用 Rust 初始化的最小项目，目标是把 OpenClaw 的 tool call 核心链路落成一个清晰、可扩展的服务骨架：
 
@@ -125,25 +125,25 @@ cargo run
 Docker 构建：
 
 ```bash
-docker build -t rs-tool-call:latest .
+docker build -t mimic-shrimp-rs:latest .
 ```
 
 如果你要打带 Gemini provider 的镜像：
 
 ```bash
-docker build --build-arg APP_FEATURES=gemini-provider -t rs-tool-call:gemini .
+docker build --build-arg APP_FEATURES=gemini-provider -t mimic-shrimp-rs:gemini .
 ```
 
 Docker 运行：
 
 ```bash
 docker run -d \
-  --name rs-tool-call \
+  --name mimic-shrimp-rs \
   --restart unless-stopped \
   -p 7878:7878 \
   --env-file .env \
   -e SERVER_ADDR=0.0.0.0:7878 \
-  rs-tool-call:latest
+  mimic-shrimp-rs:latest
 ```
 
 一键更新部署：
@@ -152,13 +152,13 @@ docker run -d \
 bash scripts/deploy.sh
 ```
 
-这个脚本会按当前分支执行 `git pull --ff-only`、重新构建镜像，并替换当前运行中的 `rs-tool-call` 容器；默认读取项目根目录下的 `.env`。
+这个脚本会按当前分支执行 `git pull --ff-only`、重新构建镜像，并替换当前运行中的 `mimic-shrimp-rs` 容器；默认读取项目根目录下的 `.env`。
 
 如果你要推到镜像仓库：
 
 ```bash
-docker tag rs-tool-call:latest your-registry/rs-tool-call:latest
-docker push your-registry/rs-tool-call:latest
+docker tag mimic-shrimp-rs:latest your-registry/mimic-shrimp-rs:latest
+docker push your-registry/mimic-shrimp-rs:latest
 ```
 
 说明：
@@ -170,7 +170,7 @@ docker push your-registry/rs-tool-call:latest
 - 默认 `base_url` 是北京地域 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
 - 你也可以用 `DASHSCOPE_BASE_URL`、`BAILIAN_BASE_URL`、`GLM_BASE_URL` 覆盖地域 endpoint。
 - API key 支持 `DASHSCOPE_API_KEY`、`BAILIAN_API_KEY`、`GLM_API_KEY`、`LLM_API_KEY`。
-- Docker 镜像默认监听 `0.0.0.0:7878`，容器内直接运行 `rs-tool-call`。
+- Docker 镜像默认监听 `0.0.0.0:7878`，容器内直接运行 `mimic-shrimp-rs`。
 - 如果你在飞书后台配置服务端回调地址，建议填 `https://your-domain/feishu/callback` 或 `https://your-domain/api/feishu/callback`。
 - 如果你开启飞书加密策略，需要同时配置 `FEISHU_CALLBACK_ENCRYPT_KEY`。
 - 如果你配置了 Verification Token，需要同时配置 `FEISHU_CALLBACK_VERIFICATION_TOKEN`。
@@ -222,7 +222,7 @@ curl -s http://127.0.0.1:7878/extract/form \
   }'
 ```
 
-本地 Markdown 表单示例见 [forms/basic_profile.md](/Users/zhengpeng/Source/Code/Rust-Code/Github/rs-tool-call/forms/basic_profile.md)。
+本地 Markdown 表单示例见 [forms/basic_profile.md](/Users/zhengpeng/Source/Code/Rust-Code/Github/mimic-shrimp-rs/forms/basic_profile.md)。
 
 媒体翻译：
 

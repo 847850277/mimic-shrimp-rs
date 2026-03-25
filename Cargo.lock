@@ -1572,6 +1572,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "mimic-shrimp-rs"
+version = "0.1.0"
+dependencies = [
+ "adk-model",
+ "adk-rust",
+ "aes",
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "cbc",
+ "chrono",
+ "dotenvy",
+ "reqwest",
+ "salvo",
+ "schemars 0.8.22",
+ "serde",
+ "serde-xml-rs",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2292,32 +2318,6 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "rs-tool-call"
-version = "0.1.0"
-dependencies = [
- "adk-model",
- "adk-rust",
- "aes",
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "cbc",
- "chrono",
- "dotenvy",
- "reqwest",
- "salvo",
- "schemars 0.8.22",
- "serde",
- "serde-xml-rs",
- "serde_json",
- "sha2",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

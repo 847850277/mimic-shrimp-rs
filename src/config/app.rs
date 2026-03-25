@@ -84,7 +84,8 @@ impl AppConfig {
         }
 
         Ok(Self {
-            app_name: std::env::var("APP_NAME").unwrap_or_else(|_| "rs-tool-call".to_string()),
+            app_name: std::env::var("APP_NAME")
+                .unwrap_or_else(|_| "mimic-shrimp-rs".to_string()),
             server_addr: std::env::var("SERVER_ADDR")
                 .unwrap_or_else(|_| "127.0.0.1:7878".to_string()),
             default_system_prompt: std::env::var("SYSTEM_PROMPT").unwrap_or_else(|_| {
