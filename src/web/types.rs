@@ -95,6 +95,42 @@ pub(crate) struct SpeechSynthesisRequest {
     pub(crate) stream: Option<bool>,
 }
 
+/// `/weixin/login/start` 请求体。
+#[derive(Debug, Deserialize)]
+pub(crate) struct WeixinLoginStartRequest {
+    #[serde(default)]
+    pub(crate) force: bool,
+    #[serde(default)]
+    pub(crate) account_id: Option<String>,
+}
+
+/// `/weixin/login/wait` 请求体。
+#[derive(Debug, Deserialize)]
+pub(crate) struct WeixinLoginWaitRequest {
+    pub(crate) session_key: String,
+    #[serde(default)]
+    pub(crate) timeout_ms: Option<u64>,
+}
+
+/// 微信登录开始响应。
+#[derive(Debug, Serialize)]
+pub(crate) struct WeixinLoginStartResponse {
+    pub(crate) ok: bool,
+    pub(crate) session_key: String,
+    pub(crate) qr_code_url: Option<String>,
+    pub(crate) message: String,
+}
+
+/// 微信登录等待响应。
+#[derive(Debug, Serialize)]
+pub(crate) struct WeixinLoginWaitResponse {
+    pub(crate) ok: bool,
+    pub(crate) connected: bool,
+    pub(crate) account_id: Option<String>,
+    pub(crate) linked_user_id: Option<String>,
+    pub(crate) message: String,
+}
+
 /// 错误响应外层结构。
 #[derive(Debug, Serialize)]
 pub(crate) struct ErrorBody {

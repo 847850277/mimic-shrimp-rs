@@ -12,7 +12,8 @@ use super::{
     cors::CorsHandler,
     handlers::{
         chat, cors_preflight, extract_form, feishu_callback, health, invoke_tool, list_sessions,
-        list_tools, session_history, synthesize_speech, translate_media,
+        list_tools, list_weixin_accounts, session_history, synthesize_speech, translate_media,
+        weixin_login_start, weixin_login_wait, weixin_restart_account,
     },
     state::{AppState, StateInjector},
 };
@@ -48,6 +49,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .options(cors_preflight)
                 .get(feishu_callback)
                 .post(feishu_callback),
+        )
+        .push(
+            Router::with_path("weixin/login/start")
+                .options(cors_preflight)
+                .post(weixin_login_start),
+        )
+        .push(
+            Router::with_path("weixin/login/wait")
+                .options(cors_preflight)
+                .post(weixin_login_wait),
+        )
+        .push(
+            Router::with_path("weixin/accounts")
+                .options(cors_preflight)
+                .get(list_weixin_accounts),
+        )
+        .push(
+            Router::with_path("weixin/accounts/{account_id}/restart")
+                .options(cors_preflight)
+                .post(weixin_restart_account),
         )
         .push(
             Router::with_path("tools")

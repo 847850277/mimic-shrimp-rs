@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     EnglishLearningConfig, ExecCommandToolConfig, FeishuCallbackConfig, FormConfig, LlmConfig,
-    LlmProvider, MediaTranslateConfig, SpeechSynthesisConfig,
+    LlmProvider, MediaTranslateConfig, SpeechSynthesisConfig, WeixinChannelConfig,
     env::{
         first_env, parse_bool_env, parse_csv_env, parse_f32_env, parse_u64_env, parse_usize_env,
     },
@@ -26,6 +26,7 @@ pub struct AppConfig {
     pub speech_synthesis: SpeechSynthesisConfig,
     pub english_learning: EnglishLearningConfig,
     pub feishu_callback: FeishuCallbackConfig,
+    pub weixin_channel: WeixinChannelConfig,
     pub exec_command_tool: ExecCommandToolConfig,
 }
 
@@ -205,6 +206,45 @@ impl AppConfig {
                     .filter(|value| !value.is_empty()),
                 audio_target_lang: std::env::var("FEISHU_AUDIO_TARGET_LANG")
                     .unwrap_or_else(|_| "zh".to_string()),
+            },
+            weixin_channel: WeixinChannelConfig {
+                enabled: parse_bool_env("WEIXIN_ENABLED", false)
+                    .with_context(|| "invalid WEIXIN_ENABLED, expected true/false".to_string())?,
+                base_url: std::env::var("WEIXIN_API_BASE_URL")
+                    .unwrap_or_else(|_| "https://ilinkai.weixin.qq.com".to_string()),
+                cdn_base_url: std::env::var("WEIXIN_CDN_BASE_URL")
+                    .unwrap_or_else(|_| "https://novac2c.cdn.weixin.qq.com/c2c".to_string()),
+                state_dir: PathBuf::from(
+                    std::env::var("WEIXIN_STATE_DIR")
+                        .unwrap_or_else(|_| "./channel_state/weixin".to_string()),
+                ),
+                route_tag: std::env::var("WEIXIN_ROUTE_TAG")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                ilink_app_id: std::env::var("WEIXIN_ILINK_APP_ID")
+                    .unwrap_or_else(|_| "bot".to_string()),
+                bot_type: std::env::var("WEIXIN_BOT_TYPE")
+                    .unwrap_or_else(|_| "3".to_string()),
+                login_timeout_ms: parse_u64_env("WEIXIN_LOGIN_TIMEOUT_MS", 480_000)
+                    .with_context(|| {
+                        "invalid WEIXIN_LOGIN_TIMEOUT_MS, expected integer".to_string()
+                    })?,
+                long_poll_timeout_ms: parse_u64_env("WEIXIN_LONG_POLL_TIMEOUT_MS", 35_000)
+                    .with_context(|| {
+                        "invalid WEIXIN_LONG_POLL_TIMEOUT_MS, expected integer".to_string()
+                    })?,
+                retry_delay_ms: parse_u64_env("WEIXIN_RETRY_DELAY_MS", 2_000).with_context(
+                    || "invalid WEIXIN_RETRY_DELAY_MS, expected integer".to_string(),
+                )?,
+                backoff_delay_ms: parse_u64_env("WEIXIN_BACKOFF_DELAY_MS", 30_000)
+                    .with_context(|| {
+                        "invalid WEIXIN_BACKOFF_DELAY_MS, expected integer".to_string()
+                    })?,
+                session_pause_minutes: parse_u64_env("WEIXIN_SESSION_PAUSE_MINUTES", 60)
+                    .with_context(|| {
+                        "invalid WEIXIN_SESSION_PAUSE_MINUTES, expected integer".to_string()
+                    })?,
             },
             exec_command_tool: ExecCommandToolConfig {
                 enabled: parse_bool_env("EXEC_COMMAND_TOOL_ENABLED", false).with_context(|| {

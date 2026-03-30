@@ -7,6 +7,7 @@ pub enum ChannelKind {
     Feishu,
     Dingtalk,
     Wecom,
+    Weixin,
 }
 
 impl ChannelKind {
@@ -16,6 +17,7 @@ impl ChannelKind {
             Self::Feishu => "feishu",
             Self::Dingtalk => "dingtalk",
             Self::Wecom => "wecom",
+            Self::Weixin => "weixin",
         }
     }
 }

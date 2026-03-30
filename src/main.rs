@@ -18,6 +18,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::{
     capability::{CapabilityHub, EnglishLearningCapability, StructuredExtractionCapability},
+    channel::weixin::WeixinManager,
     config::AppConfig,
     engine::ToolCallEngine,
     forms::{MarkdownFormStore, SharedFormDefinitionStore},
@@ -62,6 +63,10 @@ async fn main() -> Result<()> {
         config.speech_synthesis.clone(),
         english_learning,
     );
+    let weixin_manager = Arc::new(WeixinManager::new(
+        config.weixin_channel.clone(),
+        capabilities.clone(),
+    ));
 
     logging::log_service_startup(
         &config.server_addr,
@@ -96,11 +101,15 @@ async fn main() -> Result<()> {
             learning.run_scheduler_loop().await;
         });
     }
+    if let Err(error) = weixin_manager.start_all_monitors().await {
+        tracing::warn!("failed to start weixin monitors: {error}");
+    }
 
     run_http(Arc::new(AppState {
         config,
         capabilities,
         form_store,
+        weixin_manager,
     }))
     .await
 }

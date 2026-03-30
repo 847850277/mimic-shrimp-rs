@@ -30,6 +30,8 @@ use super::{
         ChatRequest, FormExtractRequest, FormExtractResponse, FormInvalidFieldResponse,
         HealthResponse, MediaTranslateRequest, MediaTranslateResponse, SpeechSynthesisRequest,
         SpeechSynthesisResponse, ToolInvokeRequest, ToolInvokeResponse,
+        WeixinLoginStartRequest, WeixinLoginStartResponse, WeixinLoginWaitRequest,
+        WeixinLoginWaitResponse,
     },
     util::{merge_action_into_args, render_error},
 };
@@ -50,6 +52,122 @@ pub(crate) async fn health(depot: &mut Depot, res: &mut Response) {
 #[handler]
 pub(crate) async fn cors_preflight(res: &mut Response) {
     res.status_code(StatusCode::NO_CONTENT);
+}
+
+/// 开始微信二维码登录。
+#[handler]
+pub(crate) async fn weixin_login_start(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let body = match req.parse_json::<WeixinLoginStartRequest>().await {
+        Ok(value) => value,
+        Err(error) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+    let state = app_state(depot);
+    match state
+        .weixin_manager
+        .start_login(body.force, body.account_id)
+        .await
+    {
+        Ok(result) => res.render(Json(WeixinLoginStartResponse {
+            ok: true,
+            session_key: result.session_key,
+            qr_code_url: result.qr_code_url,
+            message: result.message,
+        })),
+        Err(error) => render_error(
+            res,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "weixin_login_start_failed",
+            &error.to_string(),
+        ),
+    }
+}
+
+/// 等待微信二维码登录结果。
+#[handler]
+pub(crate) async fn weixin_login_wait(req: &mut Request, depot: &mut Depot, res: &mut Response) {
+    let body = match req.parse_json::<WeixinLoginWaitRequest>().await {
+        Ok(value) => value,
+        Err(error) => {
+            render_error(
+                res,
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                &error.to_string(),
+            );
+            return;
+        }
+    };
+    let state = app_state(depot);
+    match state
+        .weixin_manager
+        .wait_login(&body.session_key, body.timeout_ms)
+        .await
+    {
+        Ok(result) => res.render(Json(WeixinLoginWaitResponse {
+            ok: true,
+            connected: result.connected,
+            account_id: result.account_id,
+            linked_user_id: result.linked_user_id,
+            message: result.message,
+        })),
+        Err(error) => render_error(
+            res,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "weixin_login_wait_failed",
+            &error.to_string(),
+        ),
+    }
+}
+
+/// 列出当前微信账号。
+#[handler]
+pub(crate) async fn list_weixin_accounts(depot: &mut Depot, res: &mut Response) {
+    let state = app_state(depot);
+    match state.weixin_manager.list_accounts().await {
+        Ok(accounts) => res.render(Json(accounts)),
+        Err(error) => render_error(
+            res,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "weixin_accounts_failed",
+            &error.to_string(),
+        ),
+    }
+}
+
+/// 重启指定微信账号的长轮询任务。
+#[handler]
+pub(crate) async fn weixin_restart_account(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+) {
+    let Some(account_id) = req.param::<String>("account_id") else {
+        render_error(
+            res,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "missing account_id",
+        );
+        return;
+    };
+    let state = app_state(depot);
+    match state.weixin_manager.restart_account(&account_id).await {
+        Ok(()) => res.render(Json(serde_json::json!({ "ok": true, "account_id": account_id }))),
+        Err(error) => render_error(
+            res,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "weixin_restart_failed",
+            &error.to_string(),
+        ),
+    }
 }
 
 /// 处理飞书回调请求，并在识别到文本消息时转交给飞书通道服务。

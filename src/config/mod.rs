@@ -12,7 +12,7 @@ mod speech;
 mod tool;
 
 pub use app::AppConfig;
-pub use channel::FeishuCallbackConfig;
+pub use channel::{FeishuCallbackConfig, WeixinChannelConfig};
 pub use form::FormConfig;
 pub use learning::EnglishLearningConfig;
 pub use llm::{LlmConfig, LlmProvider};
