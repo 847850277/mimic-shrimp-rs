@@ -306,6 +306,9 @@ cargo run --example backtracking_call
 - `src/models/*`: adk-rust 模型初始化。
 - `src/session_store.rs`: 内存会话存储和历史视图。
 
+## 微信官方接入
+https://npmx.dev/package/@tencent-weixin/openclaw-weixin
+
 ## 后续可扩展方向
 
 - 加入 tool policy / auth / allowlist。
