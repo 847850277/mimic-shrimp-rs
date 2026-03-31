@@ -38,7 +38,7 @@ pub(crate) fn build_llm_context_window(
     }
 
     let first = contents.first().cloned().expect("non-empty transcript");
-    if first.role == "system" {
+    let window = if first.role == "system" {
         if max_messages == 1 {
             return vec![first];
         }
@@ -49,7 +49,26 @@ pub(crate) fn build_llm_context_window(
         window
     } else {
         contents[contents.len() - max_messages..].to_vec()
+    };
+
+    trim_leading_orphan_tool_messages(window)
+}
+
+fn trim_leading_orphan_tool_messages(mut window: Vec<Content>) -> Vec<Content> {
+    let start_index = match window.first().map(|content| content.role.as_str()) {
+        Some("system") => 1,
+        _ => 0,
+    };
+
+    while window.len() > start_index && is_tool_like_role(window[start_index].role.as_str()) {
+        window.remove(start_index);
     }
+
+    window
+}
+
+fn is_tool_like_role(role: &str) -> bool {
+    matches!(role, "tool" | "function")
 }
 
 /// 返回候选动作的类型标签，便于追踪和日志记录。
