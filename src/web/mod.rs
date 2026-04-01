@@ -3,6 +3,7 @@
 
 mod cors;
 mod handlers;
+mod pages;
 mod router;
 mod state;
 mod types;

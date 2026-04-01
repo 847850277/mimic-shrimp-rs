@@ -118,6 +118,7 @@ pub(crate) struct WeixinLoginStartResponse {
     pub(crate) ok: bool,
     pub(crate) session_key: String,
     pub(crate) qr_code_url: Option<String>,
+    pub(crate) qr_code_data_url: Option<String>,
     pub(crate) message: String,
 }
 

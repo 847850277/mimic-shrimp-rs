@@ -3,7 +3,7 @@
 use salvo::{
     Depot, Request, Response,
     http::StatusCode,
-    prelude::{Json, handler},
+    prelude::{Json, Text, handler},
 };
 use serde_json::{Map, Value};
 use tracing::debug;
@@ -25,6 +25,7 @@ use crate::{
 };
 
 use super::{
+    pages::{weixin_connect_disabled_page_html, weixin_connect_page_html},
     state::app_state,
     types::{
         ChatRequest, FormExtractRequest, FormExtractResponse, FormInvalidFieldResponse,
@@ -46,6 +47,18 @@ pub(crate) async fn health(depot: &mut Depot, res: &mut Response) {
         provider: state.config.llm.provider.as_str().to_string(),
         model: state.config.llm.model.clone(),
     }));
+}
+
+/// 返回微信扫码接入页面。
+#[handler]
+pub(crate) async fn weixin_connect_page(depot: &mut Depot, res: &mut Response) {
+    let state = app_state(depot);
+    let html = if state.weixin_manager.is_enabled() {
+        weixin_connect_page_html()
+    } else {
+        weixin_connect_disabled_page_html()
+    };
+    res.render(Text::Html(html));
 }
 
 /// 处理浏览器的 CORS 预检请求。
@@ -79,6 +92,7 @@ pub(crate) async fn weixin_login_start(req: &mut Request, depot: &mut Depot, res
             ok: true,
             session_key: result.session_key,
             qr_code_url: result.qr_code_url,
+            qr_code_data_url: result.qr_code_data_url,
             message: result.message,
         })),
         Err(error) => render_error(

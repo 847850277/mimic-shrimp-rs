@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct WeixinLoginStartResult {
     pub session_key: String,
     pub qr_code_url: Option<String>,
+    pub qr_code_data_url: Option<String>,
     pub message: String,
 }
 

@@ -7,6 +7,8 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
@@ -113,6 +115,7 @@ impl WeixinManager {
                     return Ok(WeixinLoginStartResult {
                         session_key,
                         qr_code_url: Some(existing.qrcode_url.clone()),
+                        qr_code_data_url: build_qr_code_data_url(existing.qrcode_url.as_str()),
                         message: "二维码已就绪，请使用微信扫描。".to_string(),
                     });
                 }
@@ -136,6 +139,7 @@ impl WeixinManager {
         );
         Ok(WeixinLoginStartResult {
             session_key,
+            qr_code_data_url: build_qr_code_data_url(qr.qrcode_img_content.as_str()),
             qr_code_url: Some(qr.qrcode_img_content),
             message: "使用微信扫描二维码完成连接。".to_string(),
         })
@@ -515,4 +519,33 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn build_qr_code_data_url(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).ok()?;
+    let svg = render_qr_svg(&qr, 8);
+    Some(format!(
+        "data:image/svg+xml;base64,{}",
+        STANDARD.encode(svg.as_bytes())
+    ))
+}
+
+fn render_qr_svg(qr: &QrCode, border: i32) -> String {
+    let size = qr.size();
+    let dimension = size + border * 2;
+    let mut path = String::new();
+    for y in 0..size {
+        for x in 0..size {
+            if qr.get_module(x, y) {
+                path.push_str(&format!("M{},{}h1v1h-1z", x + border, y + border));
+            }
+        }
+    }
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {dimension} {dimension}\" shape-rendering=\"crispEdges\"><rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/><path d=\"{path}\" fill=\"#111111\"/></svg>"
+    )
 }
