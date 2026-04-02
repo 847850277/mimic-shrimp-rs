@@ -104,6 +104,9 @@ async fn main() -> Result<()> {
     if let Err(error) = weixin_manager.start_all_monitors().await {
         tracing::warn!("failed to start weixin monitors: {error}");
     }
+    if let Err(error) = weixin_manager.start_supervisor().await {
+        tracing::warn!("failed to start weixin supervisor: {error}");
+    }
 
     run_http(Arc::new(AppState {
         config,

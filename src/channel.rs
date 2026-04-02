@@ -2,9 +2,9 @@
 //! 当前实现只有飞书，后续可以在这里继续接入钉钉、企业微信等通道。
 
 pub mod feishu;
-pub mod weixin;
 #[path = "channel/types.rs"]
 mod types;
+pub mod weixin;
 
 pub use types::{
     ChannelKind, InboundAudioMessage, InboundMessageParseOutcome, InboundTextMessage,

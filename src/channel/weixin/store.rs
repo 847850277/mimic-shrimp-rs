@@ -37,7 +37,10 @@ impl WeixinStore {
             .load_accounts()?
             .into_iter()
             .map(|account| {
-                let state = runtime.get(account.account_id.as_str()).cloned().unwrap_or_default();
+                let state = runtime
+                    .get(account.account_id.as_str())
+                    .cloned()
+                    .unwrap_or_default();
                 WeixinAccountSummary {
                     account_id: account.account_id,
                     linked_user_id: account.linked_user_id,
@@ -47,6 +50,8 @@ impl WeixinStore {
                     last_start_at_ms: state.last_start_at_ms,
                     last_event_at_ms: state.last_event_at_ms,
                     last_inbound_at_ms: state.last_inbound_at_ms,
+                    last_restart_at_ms: state.last_restart_at_ms,
+                    paused_until_ms: state.paused_until_ms,
                     last_error: state.last_error,
                 }
             })
@@ -91,7 +96,10 @@ impl WeixinStore {
     /// 保存账号。
     pub fn save_account(&self, account: &WeixinAccountRecord) -> Result<()> {
         fs::create_dir_all(self.accounts_dir())?;
-        fs::write(self.account_path(&account.account_id), serde_json::to_vec_pretty(account)?)?;
+        fs::write(
+            self.account_path(&account.account_id),
+            serde_json::to_vec_pretty(account)?,
+        )?;
         Ok(())
     }
 
@@ -112,7 +120,10 @@ impl WeixinStore {
         let mut payload = HashMap::new();
         payload.insert("get_updates_buf".to_string(), cursor.to_string());
         payload.insert("updated_at_ms".to_string(), now_ms().to_string());
-        fs::write(self.sync_path(account_id), serde_json::to_vec_pretty(&payload)?)?;
+        fs::write(
+            self.sync_path(account_id),
+            serde_json::to_vec_pretty(&payload)?,
+        )?;
         Ok(())
     }
 
@@ -145,6 +156,16 @@ impl WeixinStore {
         let mut runtime = self.runtime.write().await;
         let entry = runtime.entry(account_id.to_string()).or_default();
         mutate(entry);
+    }
+
+    /// 读取指定账号的运行时状态快照。
+    pub async fn load_runtime_state(&self, account_id: &str) -> WeixinAccountRuntimeState {
+        self.runtime
+            .read()
+            .await
+            .get(account_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn accounts_dir(&self) -> PathBuf {

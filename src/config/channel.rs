@@ -31,4 +31,7 @@ pub struct WeixinChannelConfig {
     pub retry_delay_ms: u64,
     pub backoff_delay_ms: u64,
     pub session_pause_minutes: u64,
+    pub supervisor_interval_ms: u64,
+    pub supervisor_stale_after_ms: u64,
+    pub supervisor_restart_gap_ms: u64,
 }

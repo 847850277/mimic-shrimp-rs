@@ -30,9 +30,8 @@ use super::{
     types::{
         ChatRequest, FormExtractRequest, FormExtractResponse, FormInvalidFieldResponse,
         HealthResponse, MediaTranslateRequest, MediaTranslateResponse, SpeechSynthesisRequest,
-        SpeechSynthesisResponse, ToolInvokeRequest, ToolInvokeResponse,
-        WeixinLoginStartRequest, WeixinLoginStartResponse, WeixinLoginWaitRequest,
-        WeixinLoginWaitResponse,
+        SpeechSynthesisResponse, ToolInvokeRequest, ToolInvokeResponse, WeixinLoginStartRequest,
+        WeixinLoginStartResponse, WeixinLoginWaitRequest, WeixinLoginWaitResponse,
     },
     util::{merge_action_into_args, render_error},
 };
@@ -174,7 +173,9 @@ pub(crate) async fn weixin_restart_account(
     };
     let state = app_state(depot);
     match state.weixin_manager.restart_account(&account_id).await {
-        Ok(()) => res.render(Json(serde_json::json!({ "ok": true, "account_id": account_id }))),
+        Ok(()) => res.render(Json(
+            serde_json::json!({ "ok": true, "account_id": account_id }),
+        )),
         Err(error) => render_error(
             res,
             StatusCode::INTERNAL_SERVER_ERROR,

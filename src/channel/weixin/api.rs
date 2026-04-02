@@ -14,8 +14,8 @@ use crate::config::WeixinChannelConfig;
 
 use super::types::{
     WeixinAccountRecord, WeixinBaseInfo, WeixinGetUpdatesRequest, WeixinGetUpdatesResponse,
-    WeixinOutboundMessage, WeixinOutboundMessageItem, WeixinOutboundTextItem,
-    WeixinQrCodeResponse, WeixinQrStatusResponse, WeixinSendMessageRequest,
+    WeixinOutboundMessage, WeixinOutboundMessageItem, WeixinOutboundTextItem, WeixinQrCodeResponse,
+    WeixinQrStatusResponse, WeixinSendMessageRequest,
 };
 
 const DEFAULT_API_TIMEOUT_MS: u64 = 15_000;
@@ -207,7 +207,10 @@ impl WeixinApiClient {
             "X-WECHAT-UIN",
             HeaderValue::from_str(random_wechat_uin().as_str())?,
         );
-        headers.insert(CONTENT_LENGTH, HeaderValue::from_str(body_len.to_string().as_str())?);
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(body_len.to_string().as_str())?,
+        );
         if let Some(value) = token.filter(|value| !value.trim().is_empty()) {
             headers.insert(
                 AUTHORIZATION,

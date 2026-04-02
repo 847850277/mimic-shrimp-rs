@@ -40,7 +40,8 @@ pub async fn run_account_monitor(manager: WeixinManager, account: WeixinAccountR
             .await;
         match response {
             Ok(payload) => {
-                if let Some(timeout_ms) = payload.longpolling_timeout_ms.filter(|value| *value > 0) {
+                if let Some(timeout_ms) = payload.longpolling_timeout_ms.filter(|value| *value > 0)
+                {
                     next_timeout_ms = timeout_ms;
                 }
                 if let Some(pause_until) =
@@ -51,7 +52,9 @@ pub async fn run_account_monitor(manager: WeixinManager, account: WeixinAccountR
                     continue;
                 }
                 consecutive_failures = 0;
-                manager.mark_runtime_event(account.account_id.as_str(), false).await;
+                manager
+                    .mark_runtime_event(account.account_id.as_str(), false)
+                    .await;
                 if let Some(cursor) = payload
                     .get_updates_buf
                     .as_deref()
@@ -71,7 +74,9 @@ pub async fn run_account_monitor(manager: WeixinManager, account: WeixinAccountR
                     }
                 }
                 for message in payload.msgs {
-                    manager.mark_runtime_event(account.account_id.as_str(), true).await;
+                    manager
+                        .mark_runtime_event(account.account_id.as_str(), true)
+                        .await;
                     if let Err(error) = manager.handle_incoming_message(&account, message).await {
                         manager
                             .mark_runtime_error(account.account_id.as_str(), error.to_string())
@@ -113,12 +118,12 @@ async fn handle_api_error(
         let pause_until =
             super::service::now_ms() + manager.config().session_pause_minutes * 60_000;
         manager
+            .mark_runtime_paused_until(account_id, pause_until)
+            .await;
+        manager
             .mark_runtime_error(
                 account_id,
-                format!(
-                    "weixin session expired, pausing until {}",
-                    pause_until
-                ),
+                format!("weixin session expired, pausing until {}", pause_until),
             )
             .await;
         return Some(pause_until);

@@ -245,6 +245,21 @@ impl AppConfig {
                     .with_context(|| {
                         "invalid WEIXIN_SESSION_PAUSE_MINUTES, expected integer".to_string()
                     })?,
+                supervisor_interval_ms: parse_u64_env("WEIXIN_SUPERVISOR_INTERVAL_MS", 30_000)
+                    .with_context(|| {
+                        "invalid WEIXIN_SUPERVISOR_INTERVAL_MS, expected integer".to_string()
+                    })?,
+                supervisor_stale_after_ms: parse_u64_env("WEIXIN_SUPERVISOR_STALE_AFTER_MS", 0)
+                    .with_context(|| {
+                        "invalid WEIXIN_SUPERVISOR_STALE_AFTER_MS, expected integer".to_string()
+                    })?,
+                supervisor_restart_gap_ms: parse_u64_env(
+                    "WEIXIN_SUPERVISOR_RESTART_GAP_MS",
+                    0,
+                )
+                .with_context(|| {
+                    "invalid WEIXIN_SUPERVISOR_RESTART_GAP_MS, expected integer".to_string()
+                })?,
             },
             exec_command_tool: ExecCommandToolConfig {
                 enabled: parse_bool_env("EXEC_COMMAND_TOOL_ENABLED", false).with_context(|| {

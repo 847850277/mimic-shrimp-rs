@@ -42,6 +42,8 @@ pub struct WeixinAccountSummary {
     pub last_start_at_ms: Option<u64>,
     pub last_event_at_ms: Option<u64>,
     pub last_inbound_at_ms: Option<u64>,
+    pub last_restart_at_ms: Option<u64>,
+    pub paused_until_ms: Option<u64>,
     pub last_error: Option<String>,
 }
 
@@ -52,6 +54,8 @@ pub struct WeixinAccountRuntimeState {
     pub last_start_at_ms: Option<u64>,
     pub last_event_at_ms: Option<u64>,
     pub last_inbound_at_ms: Option<u64>,
+    pub last_restart_at_ms: Option<u64>,
+    pub paused_until_ms: Option<u64>,
     pub last_error: Option<String>,
 }
 

@@ -14,11 +14,13 @@ use tokio::{
     task::JoinHandle,
     time::{Duration, sleep},
 };
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-    capability::{CapabilityHub, ConversationCapability, ConversationRequest, EnglishLearningCapability},
+    capability::{
+        CapabilityHub, ConversationCapability, ConversationRequest, EnglishLearningCapability,
+    },
     channel::{ChannelKind, InboundTextMessage},
     config::WeixinChannelConfig,
     logging,
@@ -29,13 +31,16 @@ use super::{
     monitor::run_account_monitor,
     store::WeixinStore,
     types::{
-        WeixinAccountRecord, WeixinActiveLogin, WeixinAccountSummary, WeixinLoginStartResult,
+        WeixinAccountRecord, WeixinAccountSummary, WeixinActiveLogin, WeixinLoginStartResult,
         WeixinLoginWaitResult, WeixinMessage,
     },
 };
 
 pub(crate) const SESSION_EXPIRED_ERRCODE: i64 = -14;
 const LOGIN_TTL_MS: u64 = 5 * 60_000;
+const MIN_STALE_AFTER_MS: u64 = 120_000;
+const STALE_WINDOW_MULTIPLIER: u64 = 4;
+const MIN_RESTART_GAP_MS: u64 = 60_000;
 
 /// 微信通道管理器。
 #[derive(Clone)]
@@ -51,6 +56,7 @@ struct WeixinManagerInner {
     login_sessions: Mutex<HashMap<String, WeixinActiveLogin>>,
     context_tokens: RwLock<HashMap<String, HashMap<String, String>>>,
     monitor_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+    supervisor_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl WeixinManager {
@@ -67,6 +73,7 @@ impl WeixinManager {
                 login_sessions: Mutex::new(HashMap::new()),
                 context_tokens: RwLock::new(HashMap::new()),
                 monitor_tasks: Mutex::new(HashMap::new()),
+                supervisor_task: Mutex::new(None),
             }),
         }
     }
@@ -92,9 +99,34 @@ impl WeixinManager {
             return Ok(());
         }
         for account in self.inner.store.load_accounts()? {
-            self.load_context_tokens(account.account_id.as_str()).await?;
+            self.load_context_tokens(account.account_id.as_str())
+                .await?;
             self.start_monitor(account).await?;
         }
+        Ok(())
+    }
+
+    /// 启动微信账号在线保持 supervisor。
+    pub async fn start_supervisor(&self) -> Result<()> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        let mut task = self.inner.supervisor_task.lock().await;
+        if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return Ok(());
+        }
+        let manager = self.clone();
+        *task = Some(tokio::spawn(async move {
+            loop {
+                if let Err(error) = manager.run_supervisor_pass().await {
+                    warn!(error = %error, "weixin supervisor pass failed");
+                }
+                sleep(Duration::from_millis(
+                    manager.inner.config.supervisor_interval_ms.max(5_000),
+                ))
+                .await;
+            }
+        }));
         Ok(())
     }
 
@@ -154,7 +186,9 @@ impl WeixinManager {
         if !self.is_enabled() {
             return Err(anyhow!("WEIXIN_ENABLED is false"));
         }
-        let timeout_ms = timeout_ms.unwrap_or(self.inner.config.login_timeout_ms).max(1_000);
+        let timeout_ms = timeout_ms
+            .unwrap_or(self.inner.config.login_timeout_ms)
+            .max(1_000);
         let deadline = now_ms() + timeout_ms;
 
         loop {
@@ -192,7 +226,10 @@ impl WeixinManager {
             match status.status.as_str() {
                 "wait" | "scaned" => {}
                 "scaned_but_redirect" => {
-                    if let Some(host) = status.redirect_host.as_deref().filter(|value| !value.is_empty())
+                    if let Some(host) = status
+                        .redirect_host
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
                     {
                         let mut sessions = self.inner.login_sessions.lock().await;
                         if let Some(active) = sessions.get_mut(session_key) {
@@ -229,7 +266,8 @@ impl WeixinManager {
                         saved_at_ms: now_ms(),
                     };
                     self.inner.store.save_account(&account)?;
-                    self.load_context_tokens(account.account_id.as_str()).await?;
+                    self.load_context_tokens(account.account_id.as_str())
+                        .await?;
                     let mut sessions = self.inner.login_sessions.lock().await;
                     sessions.remove(session_key);
                     self.start_monitor(account).await?;
@@ -292,10 +330,14 @@ impl WeixinManager {
         else {
             return Ok(());
         };
-        let Some(text) = extract_message_text(&message).filter(|value| !value.trim().is_empty()) else {
+        let Some(text) = extract_message_text(&message).filter(|value| !value.trim().is_empty())
+        else {
             return Ok(());
         };
-        if let Some(token) = message.context_token.as_deref().filter(|value| !value.trim().is_empty())
+        if let Some(token) = message
+            .context_token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
         {
             self.set_context_token(account.account_id.as_str(), from_user_id, token)
                 .await?;
@@ -333,9 +375,10 @@ impl WeixinManager {
             &inbound.text,
         )
         .await?;
-        let context_token = message.context_token.clone().or_else(|| {
-            self.get_context_token(account.account_id.as_str(), from_user_id)
-        });
+        let context_token = message
+            .context_token
+            .clone()
+            .or_else(|| self.get_context_token(account.account_id.as_str(), from_user_id));
         let _message_id = self
             .inner
             .api
@@ -361,6 +404,7 @@ impl WeixinManager {
             .mutate_runtime(account_id, |state| {
                 state.running = true;
                 state.last_start_at_ms = Some(now_ms());
+                state.paused_until_ms = None;
                 state.last_error = None;
             })
             .await;
@@ -372,6 +416,8 @@ impl WeixinManager {
             .mutate_runtime(account_id, |state| {
                 let now = now_ms();
                 state.last_event_at_ms = Some(now);
+                state.paused_until_ms = None;
+                state.last_error = None;
                 if inbound {
                     state.last_inbound_at_ms = Some(now);
                 }
@@ -388,11 +434,31 @@ impl WeixinManager {
             .await;
     }
 
+    pub(crate) async fn mark_runtime_paused_until(&self, account_id: &str, paused_until_ms: u64) {
+        self.inner
+            .store
+            .mutate_runtime(account_id, |state| {
+                state.paused_until_ms = Some(paused_until_ms);
+            })
+            .await;
+    }
+
     pub(crate) async fn mark_runtime_stopped(&self, account_id: &str) {
         self.inner
             .store
             .mutate_runtime(account_id, |state| {
                 state.running = false;
+            })
+            .await;
+    }
+
+    async fn mark_runtime_restart_requested(&self, account_id: &str, reason: &str) {
+        self.inner
+            .store
+            .mutate_runtime(account_id, |state| {
+                let now = now_ms();
+                state.last_restart_at_ms = Some(now);
+                state.last_error = Some(format!("supervisor restart requested: {reason}"));
             })
             .await;
     }
@@ -425,6 +491,89 @@ impl WeixinManager {
         Ok(())
     }
 
+    async fn run_supervisor_pass(&self) -> Result<()> {
+        for account in self.inner.store.load_accounts()? {
+            if let Some(reason) = self
+                .supervisor_restart_reason(account.account_id.as_str())
+                .await
+            {
+                info!(
+                    account_id = %account.account_id,
+                    reason = %reason,
+                    "weixin supervisor restarting account monitor"
+                );
+                self.mark_runtime_restart_requested(account.account_id.as_str(), &reason)
+                    .await;
+                self.restart_account(account.account_id.as_str()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn supervisor_restart_reason(&self, account_id: &str) -> Option<String> {
+        let runtime = self.inner.store.load_runtime_state(account_id).await;
+        let now = now_ms();
+
+        if let Some(paused_until_ms) = runtime.paused_until_ms {
+            if now < paused_until_ms {
+                return None;
+            }
+        }
+
+        if !self.monitor_task_running(account_id).await {
+            return Some("monitor task is missing or already finished".to_string());
+        }
+
+        let stale_after_ms = self.supervisor_stale_after_ms();
+        let reference_ms = runtime.last_event_at_ms.or(runtime.last_start_at_ms);
+        let Some(reference_ms) = reference_ms else {
+            return None;
+        };
+
+        if now.saturating_sub(reference_ms) < stale_after_ms {
+            return None;
+        }
+
+        if let Some(last_restart_at_ms) = runtime.last_restart_at_ms {
+            if now.saturating_sub(last_restart_at_ms) < self.supervisor_restart_gap_ms() {
+                return None;
+            }
+        }
+
+        Some(format!(
+            "stale monitor heartbeat for {} ms",
+            now.saturating_sub(reference_ms)
+        ))
+    }
+
+    async fn monitor_task_running(&self, account_id: &str) -> bool {
+        let mut tasks = self.inner.monitor_tasks.lock().await;
+        let finished = tasks
+            .get(account_id)
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true);
+        if finished {
+            tasks.remove(account_id);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn supervisor_stale_after_ms(&self) -> u64 {
+        if self.inner.config.supervisor_stale_after_ms > 0 {
+            return self.inner.config.supervisor_stale_after_ms;
+        }
+        (self.inner.config.long_poll_timeout_ms * STALE_WINDOW_MULTIPLIER).max(MIN_STALE_AFTER_MS)
+    }
+
+    fn supervisor_restart_gap_ms(&self) -> u64 {
+        if self.inner.config.supervisor_restart_gap_ms > 0 {
+            return self.inner.config.supervisor_restart_gap_ms;
+        }
+        self.inner.config.backoff_delay_ms.max(MIN_RESTART_GAP_MS)
+    }
+
     async fn load_context_tokens(&self, account_id: &str) -> Result<()> {
         let tokens = self.inner.store.load_context_tokens(account_id)?;
         let mut cache = self.inner.context_tokens.write().await;
@@ -443,11 +592,12 @@ impl WeixinManager {
     }
 
     fn get_context_token(&self, account_id: &str, user_id: &str) -> Option<String> {
-        self.inner
-            .context_tokens
-            .try_read()
-            .ok()
-            .and_then(|cache| cache.get(account_id).and_then(|tokens| tokens.get(user_id)).cloned())
+        self.inner.context_tokens.try_read().ok().and_then(|cache| {
+            cache
+                .get(account_id)
+                .and_then(|tokens| tokens.get(user_id))
+                .cloned()
+        })
     }
 }
 

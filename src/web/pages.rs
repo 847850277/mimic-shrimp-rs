@@ -421,6 +421,19 @@ pub(crate) fn weixin_connect_page_html() -> String {
       align-items: center;
     }
 
+    .account-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .account-button {
+      padding: 8px 12px;
+      border-radius: 12px;
+      font-size: 13px;
+    }
+
     .pill {
       display: inline-flex;
       align-items: center;
@@ -435,6 +448,11 @@ pub(crate) fn weixin_connect_page_html() -> String {
     .pill.offline {
       background: rgba(165, 44, 44, 0.1);
       color: var(--error);
+    }
+
+    .pill.paused {
+      background: rgba(157, 95, 0, 0.12);
+      color: var(--warn);
     }
 
     .empty {
@@ -496,9 +514,9 @@ pub(crate) fn weixin_connect_page_html() -> String {
       </section>
     </section>
 
-    <section class="panel accounts">
+      <section class="panel accounts">
       <h2>当前微信账号</h2>
-      <p>连接成功后，这里会显示当前已保存的微信账号和运行状态。</p>
+      <p>连接成功后，这里会显示当前已保存的微信账号和运行状态。若会话失效或暂停，可以直接在这里重新扫码接管。</p>
       <div id="account-list" class="account-list">
         <div class="empty">还没有检测到已连接账号。</div>
       </div>
@@ -572,9 +590,19 @@ pub(crate) fn weixin_connect_page_html() -> String {
       }
 
       accountListEl.innerHTML = accounts.map((account) => {
-        const statusClass = account.running ? "pill" : "pill offline";
-        const statusText = account.running ? "在线监听中" : "未运行";
+        const isPaused = Boolean(account.paused_until_ms) && Number(account.paused_until_ms) > Date.now();
+        const statusClass = isPaused ? "pill paused" : (account.running ? "pill" : "pill offline");
+        const statusText = isPaused ? "会话暂停中" : (account.running ? "在线监听中" : "未运行");
         const lastError = account.last_error ? '<div><strong>最近错误：</strong>' + escapeHtml(account.last_error) + '</div>' : '';
+        const pausedUntil = account.paused_until_ms
+          ? '<div><strong>暂停到：</strong>' + formatTimestamp(account.paused_until_ms) + '</div>'
+          : '';
+        const lastRestart = account.last_restart_at_ms
+          ? '<div><strong>最近保活重启：</strong>' + formatTimestamp(account.last_restart_at_ms) + '</div>'
+          : '';
+        const restartButton = (!account.running || isPaused)
+          ? '<button class="secondary account-button" type="button" data-account-action="reconnect" data-account-id="' + escapeHtml(account.account_id || "") + '">重新扫码接管</button>'
+          : '<button class="secondary account-button" type="button" data-account-action="restart" data-account-id="' + escapeHtml(account.account_id || "") + '">重启监听</button>';
         return [
           '<article class="account-item">',
           '  <div class="account-top">',
@@ -583,7 +611,10 @@ pub(crate) fn weixin_connect_page_html() -> String {
           '  </div>',
           '  <div><strong>微信用户：</strong>' + escapeHtml(account.linked_user_id || "-") + '</div>',
           '  <div><strong>最近事件：</strong>' + formatTimestamp(account.last_event_at_ms) + '</div>',
+          pausedUntil,
+          lastRestart,
           lastError,
+          '  <div class="account-actions">' + restartButton + '</div>',
           '</article>'
         ].join("");
       }).join("");
@@ -660,21 +691,23 @@ pub(crate) fn weixin_connect_page_html() -> String {
       }
     }
 
-    async function startLogin(force) {
+    async function startLogin(force, accountId) {
       state.pollToken += 1;
       const pollToken = state.pollToken;
       state.sessionKey = null;
       setBusy(true);
       setQr(null, null);
       setStatus("pending", "正在生成二维码...");
-      setDetail("请稍候，页面会自动生成新的二维码。");
+      setDetail(accountId
+        ? ("正在为账号重新生成二维码: " + accountId)
+        : "请稍候，页面会自动生成新的二维码。");
 
       let payload;
       try {
         payload = await apiJson("/weixin/login/start", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ force: Boolean(force) })
+          body: JSON.stringify({ force: Boolean(force), account_id: accountId || null })
         });
       } catch (error) {
         setStatus("error", "二维码生成失败");
@@ -700,6 +733,35 @@ pub(crate) fn weixin_connect_page_html() -> String {
 
     accountsBtn.addEventListener("click", () => {
       loadAccounts();
+    });
+
+    accountListEl.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-account-action]");
+      if (!button) {
+        return;
+      }
+      const accountId = button.getAttribute("data-account-id");
+      const action = button.getAttribute("data-account-action");
+      if (!accountId) {
+        return;
+      }
+      if (action === "reconnect") {
+        startLogin(true, accountId);
+        return;
+      }
+      if (action === "restart") {
+        try {
+          await apiJson("/weixin/accounts/" + encodeURIComponent(accountId) + "/restart", {
+            method: "POST"
+          });
+          setStatus("pending", "监听已重启");
+          setDetail("已请求重启账号监听: " + accountId);
+          await loadAccounts();
+        } catch (error) {
+          setStatus("error", "监听重启失败");
+          setDetail(error.message);
+        }
+      }
     });
 
     window.addEventListener("beforeunload", () => {
