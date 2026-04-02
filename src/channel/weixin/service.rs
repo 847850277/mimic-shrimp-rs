@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::{
     capability::{
         CapabilityHub, ConversationCapability, ConversationRequest, EnglishLearningCapability,
+        SpeechSynthesisCapability, SpeechSynthesisRequest,
     },
     channel::{ChannelKind, InboundTextMessage},
     config::WeixinChannelConfig,
@@ -334,6 +335,7 @@ impl WeixinManager {
         else {
             return Ok(());
         };
+        let is_voice_message = message_contains_voice_item(&message);
         if let Some(token) = message
             .context_token
             .as_deref()
@@ -367,14 +369,25 @@ impl WeixinManager {
             &inbound.text,
         );
 
-        let answer = build_text_reply(
-            self.inner.capabilities.conversation(),
-            self.inner.capabilities.english_learning(),
-            &inbound.session_id,
-            &inbound.user_id,
-            &inbound.text,
-        )
-        .await?;
+        let answer = if is_voice_message {
+            build_audio_reply(
+                self.inner.capabilities.conversation(),
+                self.inner.capabilities.english_learning(),
+                &inbound.session_id,
+                &inbound.user_id,
+                &inbound.text,
+            )
+            .await?
+        } else {
+            build_text_reply(
+                self.inner.capabilities.conversation(),
+                self.inner.capabilities.english_learning(),
+                &inbound.session_id,
+                &inbound.user_id,
+                &inbound.text,
+            )
+            .await?
+        };
         let context_token = message
             .context_token
             .clone()
@@ -395,6 +408,27 @@ impl WeixinManager {
             session_id = %inbound.session_id,
             "weixin text reply sent"
         );
+        if is_voice_message
+            && self.inner.capabilities.speech_synthesis().is_configured()
+            && should_send_english_audio_reply(&inbound.text, &answer)
+        {
+            if let Err(error) = self
+                .send_english_audio_reply(
+                    account,
+                    from_user_id,
+                    &inbound.message_id,
+                    &inbound.session_id,
+                    &answer,
+                    context_token.as_deref(),
+                )
+                .await
+            {
+                logging::log_channel_background_error(
+                    inbound.channel.as_str(),
+                    &format!("failed to send synthesized weixin audio reply: {error}"),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -599,6 +633,28 @@ impl WeixinManager {
                 .cloned()
         })
     }
+
+    async fn send_english_audio_reply(
+        &self,
+        account: &WeixinAccountRecord,
+        to_user_id: &str,
+        reply_to_message_id: &str,
+        session_id: &str,
+        text: &str,
+        context_token: Option<&str>,
+    ) -> Result<()> {
+        send_english_audio_reply(
+            self.inner.capabilities.speech_synthesis(),
+            self.api(),
+            account,
+            to_user_id,
+            reply_to_message_id,
+            session_id,
+            text,
+            context_token,
+        )
+        .await
+    }
 }
 
 fn extract_message_text(message: &WeixinMessage) -> Option<String> {
@@ -627,6 +683,10 @@ fn extract_message_text(message: &WeixinMessage) -> Option<String> {
         }
     }
     None
+}
+
+fn message_contains_voice_item(message: &WeixinMessage) -> bool {
+    message.item_list.iter().any(|item| item.item_type == 3)
 }
 
 async fn build_text_reply(
@@ -662,6 +722,175 @@ async fn build_text_reply(
     } else {
         Ok(response.answer)
     }
+}
+
+async fn build_audio_reply(
+    conversation: &ConversationCapability,
+    english_learning: &EnglishLearningCapability,
+    session_id: &str,
+    user_id: &str,
+    transcript: &str,
+) -> Result<String> {
+    if let Some(reply) = english_learning
+        .maybe_handle_message(session_id, transcript)
+        .await?
+    {
+        let trimmed = reply.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(reply) = english_learning
+        .maybe_handle_shadowing_audio(session_id, transcript)
+        .await?
+    {
+        let trimmed = reply.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let response = conversation
+        .execute(ConversationRequest {
+            session_id: session_id.to_string(),
+            user_id: user_id.to_string(),
+            message: transcript.to_string(),
+            system_prompt: None,
+            max_iterations: None,
+            persist: true,
+        })
+        .await?;
+
+    if response.answer.trim().is_empty() {
+        Ok("我暂时还没有合适的回复，请稍后再试。".to_string())
+    } else {
+        Ok(response.answer)
+    }
+}
+
+async fn send_english_audio_reply(
+    speech_synthesis: &SpeechSynthesisCapability,
+    api: &WeixinApiClient,
+    account: &WeixinAccountRecord,
+    to_user_id: &str,
+    reply_to_message_id: &str,
+    session_id: &str,
+    text: &str,
+    context_token: Option<&str>,
+) -> Result<()> {
+    let normalized_text = normalize_text_for_speech(text);
+    if normalized_text.is_empty() || !looks_like_english_text(&normalized_text) {
+        return Ok(());
+    }
+
+    let sample_rate = 24_000u32;
+    logging::log_channel_audio_reply_stage(
+        ChannelKind::Weixin.as_str(),
+        reply_to_message_id,
+        "tts",
+        "english-reply.mp3",
+        "mp3",
+        0,
+        None,
+    );
+    let synthesized = speech_synthesis
+        .execute(SpeechSynthesisRequest {
+            text: normalized_text,
+            model: None,
+            voice: None,
+            response_format: Some("mp3".to_string()),
+            sample_rate: Some(sample_rate),
+            speed: None,
+            gain: None,
+            stream: Some(false),
+        })
+        .await?;
+    let audio_bytes = STANDARD
+        .decode(&synthesized.audio_base64)
+        .map_err(|error| anyhow::anyhow!("invalid synthesized audio base64: {error}"))?;
+    logging::log_channel_audio_reply_stage(
+        ChannelKind::Weixin.as_str(),
+        reply_to_message_id,
+        "cdn_upload",
+        "english-reply.mp3",
+        "mp3",
+        audio_bytes.len(),
+        None,
+    );
+    let uploaded = api.upload_voice(account, to_user_id, &audio_bytes).await?;
+    logging::log_channel_audio_reply_stage(
+        ChannelKind::Weixin.as_str(),
+        reply_to_message_id,
+        "sendmessage",
+        "english-reply.mp3",
+        "mp3",
+        audio_bytes.len(),
+        None,
+    );
+    let _message_id = api
+        .send_voice_message(
+            account,
+            to_user_id,
+            &uploaded,
+            context_token,
+            Some(sample_rate),
+            None,
+        )
+        .await?;
+    logging::log_channel_audio_replied(
+        ChannelKind::Weixin.as_str(),
+        reply_to_message_id,
+        session_id,
+        "english-reply.mp3",
+        "mp3",
+        None,
+    );
+    Ok(())
+}
+
+fn should_send_english_audio_reply(transcript: &str, answer: &str) -> bool {
+    looks_like_english_text(transcript)
+        && looks_like_english_text(&normalize_text_for_speech(answer))
+}
+
+fn normalize_text_for_speech(input: &str) -> String {
+    input
+        .replace("\r\n", "\n")
+        .replace("**", "")
+        .replace("__", "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn looks_like_english_text(input: &str) -> bool {
+    let mut latin_letters = 0usize;
+    let mut cjk_chars = 0usize;
+    let mut words = 0usize;
+    let mut in_word = false;
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphabetic() {
+            latin_letters += 1;
+            if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+            if ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+                cjk_chars += 1;
+            }
+        }
+    }
+
+    latin_letters >= 12 && words >= 3 && latin_letters > cjk_chars * 2
 }
 
 pub(crate) fn now_ms() -> u64 {

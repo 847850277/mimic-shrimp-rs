@@ -17,6 +17,7 @@ base64 = "0.22.1"
 cbc = "0.1.2"
 chrono = { version = "0.4.44", features = ["serde"] }
 dotenvy = "0.15.7"
+md5 = "0.8.0"
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 qrcodegen = "1.8.0"
 salvo = { version = "0.89.2", default-features = false, features = ["server", "http1"] }

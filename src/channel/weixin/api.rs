@@ -2,8 +2,10 @@
 
 use std::time::Duration;
 
+use aes::Aes128;
 use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use md5::compute as md5_compute;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue},
@@ -14,11 +16,18 @@ use crate::config::WeixinChannelConfig;
 
 use super::types::{
     WeixinAccountRecord, WeixinBaseInfo, WeixinGetUpdatesRequest, WeixinGetUpdatesResponse,
-    WeixinOutboundMessage, WeixinOutboundMessageItem, WeixinOutboundTextItem, WeixinQrCodeResponse,
-    WeixinQrStatusResponse, WeixinSendMessageRequest,
+    WeixinGetUploadUrlRequest, WeixinGetUploadUrlResponse, WeixinOutboundCdnMedia,
+    WeixinOutboundMessage, WeixinOutboundMessageItem, WeixinOutboundTextItem,
+    WeixinOutboundVoiceItem, WeixinQrCodeResponse, WeixinQrStatusResponse,
+    WeixinSendMessageRequest, WeixinUploadedVoice,
 };
+use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
 
 const DEFAULT_API_TIMEOUT_MS: u64 = 15_000;
+const DEFAULT_CDN_TIMEOUT_MS: u64 = 30_000;
+const WEIXIN_UPLOAD_MEDIA_TYPE_VOICE: u8 = 4;
+const WEIXIN_VOICE_ENCODE_MP3: u8 = 7;
+const WEIXIN_MEDIA_ENCRYPT_TYPE_PACK: u8 = 1;
 
 /// 微信协议客户端。
 #[derive(Clone)]
@@ -122,7 +131,131 @@ impl WeixinApiClient {
                 message_state: 2,
                 item_list: vec![WeixinOutboundMessageItem {
                     item_type: 1,
-                    text_item: WeixinOutboundTextItem { text },
+                    text_item: Some(WeixinOutboundTextItem { text }),
+                    voice_item: None,
+                }],
+                context_token,
+            },
+            base_info: self.base_info(),
+        };
+        let body = serde_json::to_string(&payload)?;
+        self.api_post(
+            account.base_url.as_str(),
+            "ilink/bot/sendmessage",
+            Some(account.bot_token.as_str()),
+            body,
+            DEFAULT_API_TIMEOUT_MS,
+        )
+        .await?;
+        Ok(client_id)
+    }
+
+    /// 上传一段语音到微信 CDN，并返回可用于发送消息的媒体引用。
+    pub async fn upload_voice(
+        &self,
+        account: &WeixinAccountRecord,
+        to_user_id: &str,
+        audio_bytes: &[u8],
+    ) -> Result<WeixinUploadedVoice> {
+        let aes_key = *Uuid::new_v4().as_bytes();
+        let aes_key_hex = hex_lower(&aes_key);
+        let encrypted = aes_128_ecb_pkcs7_encrypt(&aes_key, audio_bytes)?;
+        let file_key = Uuid::new_v4().simple().to_string();
+        let raw_md5 = format!("{:x}", md5_compute(audio_bytes));
+        let payload = WeixinGetUploadUrlRequest {
+            filekey: &file_key,
+            media_type: WEIXIN_UPLOAD_MEDIA_TYPE_VOICE,
+            to_user_id,
+            rawsize: audio_bytes.len(),
+            rawfilemd5: &raw_md5,
+            filesize: encrypted.len(),
+            no_need_thumb: true,
+            aeskey: &aes_key_hex,
+            base_info: self.base_info(),
+        };
+        let body = serde_json::to_string(&payload)?;
+        let raw = self
+            .api_post(
+                account.base_url.as_str(),
+                "ilink/bot/getuploadurl",
+                Some(account.bot_token.as_str()),
+                body,
+                DEFAULT_API_TIMEOUT_MS,
+            )
+            .await?;
+        let response: WeixinGetUploadUrlResponse = serde_json::from_str(&raw)?;
+        let ret = response.ret.unwrap_or_default();
+        let errcode = response.errcode.unwrap_or_default();
+        if ret != 0 || errcode != 0 {
+            bail!(
+                "weixin getuploadurl failed: ret={} errcode={} message={}",
+                ret,
+                errcode,
+                response
+                    .errmsg
+                    .unwrap_or_else(|| "unknown weixin upload error".to_string())
+            );
+        }
+        let upload_url = response
+            .upload_full_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                response
+                    .upload_param
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| build_cdn_upload_url(self.config.cdn_base_url.as_str(), value))
+            })
+            .ok_or_else(|| anyhow!("weixin getuploadurl response missing upload target"))?;
+
+        let download_param = self.upload_to_cdn(upload_url.as_str(), &encrypted).await?;
+        let encrypt_query_param = download_param
+            .or(response.upload_param)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("weixin cdn upload response missing encrypt query param"))?;
+        Ok(WeixinUploadedVoice {
+            encrypt_query_param,
+            aes_key: STANDARD.encode(aes_key_hex.as_bytes()),
+        })
+    }
+
+    /// 发送一条语音消息。
+    pub async fn send_voice_message(
+        &self,
+        account: &WeixinAccountRecord,
+        to_user_id: &str,
+        voice: &WeixinUploadedVoice,
+        context_token: Option<&str>,
+        sample_rate: Option<u32>,
+        playtime_ms: Option<u64>,
+    ) -> Result<String> {
+        let client_id = format!("mimic-shrimp-rs-{}", Uuid::new_v4());
+        let payload = WeixinSendMessageRequest {
+            msg: WeixinOutboundMessage {
+                from_user_id: "",
+                to_user_id,
+                client_id: &client_id,
+                message_type: 2,
+                message_state: 2,
+                item_list: vec![WeixinOutboundMessageItem {
+                    item_type: 3,
+                    text_item: None,
+                    voice_item: Some(WeixinOutboundVoiceItem {
+                        media: WeixinOutboundCdnMedia {
+                            encrypt_query_param: &voice.encrypt_query_param,
+                            aes_key: &voice.aes_key,
+                            encrypt_type: Some(WEIXIN_MEDIA_ENCRYPT_TYPE_PACK),
+                        },
+                        encode_type: Some(WEIXIN_VOICE_ENCODE_MP3),
+                        bits_per_sample: None,
+                        sample_rate,
+                        playtime: playtime_ms,
+                    }),
                 }],
                 context_token,
             },
@@ -228,6 +361,33 @@ impl WeixinApiClient {
         }
         Ok(body)
     }
+
+    async fn upload_to_cdn(&self, upload_url: &str, encrypted: &[u8]) -> Result<Option<String>> {
+        let response = self
+            .http
+            .post(upload_url)
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .timeout(Duration::from_millis(DEFAULT_CDN_TIMEOUT_MS))
+            .body(encrypted.to_vec())
+            .send()
+            .await?;
+        let status = response.status();
+        let encrypted_query = response
+            .headers()
+            .get("X-Encryption-Query")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string)
+            .filter(|value| !value.trim().is_empty());
+        let body = response.text().await?;
+        if !status.is_success() {
+            bail!(
+                "weixin cdn upload returned HTTP {}: {}",
+                status.as_u16(),
+                body
+            );
+        }
+        Ok(encrypted_query)
+    }
 }
 
 fn build_client_version(version: &str) -> Result<u32> {
@@ -253,4 +413,41 @@ fn is_timeout_error(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<reqwest::Error>()
         .is_some_and(reqwest::Error::is_timeout)
+}
+
+fn build_cdn_upload_url(cdn_base_url: &str, upload_param: &str) -> String {
+    format!(
+        "{}/upload?{}",
+        cdn_base_url.trim_end_matches('/'),
+        upload_param.trim()
+    )
+}
+
+fn aes_128_ecb_pkcs7_encrypt(key: &[u8; 16], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let cipher = Aes128::new_from_slice(key)
+        .map_err(|error| anyhow!("invalid weixin aes key length: {error}"))?;
+    let mut buffer = pkcs7_pad(plaintext, 16);
+    for chunk in buffer.chunks_exact_mut(16) {
+        let block = GenericArray::from_mut_slice(chunk);
+        cipher.encrypt_block(block);
+    }
+    Ok(buffer)
+}
+
+fn pkcs7_pad(input: &[u8], block_size: usize) -> Vec<u8> {
+    let mut output = input.to_vec();
+    let mut pad_len = block_size - (output.len() % block_size);
+    if pad_len == 0 {
+        pad_len = block_size;
+    }
+    output.extend(std::iter::repeat_n(pad_len as u8, pad_len));
+    output
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
 }

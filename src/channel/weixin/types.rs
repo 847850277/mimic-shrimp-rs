@@ -89,6 +89,38 @@ pub struct WeixinGetUpdatesRequest<'a> {
     pub base_info: WeixinBaseInfo<'a>,
 }
 
+/// getuploadurl 请求体。
+#[derive(Debug, Serialize)]
+pub struct WeixinGetUploadUrlRequest<'a> {
+    pub filekey: &'a str,
+    pub media_type: u8,
+    pub to_user_id: &'a str,
+    pub rawsize: usize,
+    pub rawfilemd5: &'a str,
+    pub filesize: usize,
+    pub no_need_thumb: bool,
+    pub aeskey: &'a str,
+    pub base_info: WeixinBaseInfo<'a>,
+}
+
+/// getuploadurl 响应。
+#[derive(Debug, Clone, Deserialize)]
+pub struct WeixinGetUploadUrlResponse {
+    #[serde(default)]
+    pub ret: Option<i64>,
+    #[serde(default)]
+    pub errcode: Option<i64>,
+    #[serde(default)]
+    pub errmsg: Option<String>,
+    #[serde(default)]
+    pub upload_param: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub thumb_upload_param: Option<String>,
+    #[serde(default)]
+    pub upload_full_url: Option<String>,
+}
+
 /// 发送文本消息请求体。
 #[derive(Debug, Serialize)]
 pub struct WeixinSendMessageRequest<'a> {
@@ -170,18 +202,51 @@ pub struct WeixinOutboundMessage<'a> {
     pub context_token: Option<&'a str>,
 }
 
-/// 发送文本消息时的 item。
+/// 发送消息时的 item。
 #[derive(Debug, Serialize)]
 pub struct WeixinOutboundMessageItem<'a> {
     #[serde(rename = "type")]
     pub item_type: u8,
-    pub text_item: WeixinOutboundTextItem<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_item: Option<WeixinOutboundTextItem<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice_item: Option<WeixinOutboundVoiceItem<'a>>,
 }
 
 /// 发送文本消息时的 text_item。
 #[derive(Debug, Serialize)]
 pub struct WeixinOutboundTextItem<'a> {
     pub text: &'a str,
+}
+
+/// 发送语音消息时的 voice_item。
+#[derive(Debug, Serialize)]
+pub struct WeixinOutboundVoiceItem<'a> {
+    pub media: WeixinOutboundCdnMedia<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encode_type: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bits_per_sample: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playtime: Option<u64>,
+}
+
+/// CDN 媒体引用。
+#[derive(Debug, Serialize)]
+pub struct WeixinOutboundCdnMedia<'a> {
+    pub encrypt_query_param: &'a str,
+    pub aes_key: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypt_type: Option<u8>,
+}
+
+/// 上传后的语音媒体结果。
+#[derive(Debug, Clone)]
+pub struct WeixinUploadedVoice {
+    pub encrypt_query_param: String,
+    pub aes_key: String,
 }
 
 /// 登录中的二维码会话。
