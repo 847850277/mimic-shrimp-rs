@@ -809,6 +809,7 @@ async fn send_english_audio_reply(
     let audio_bytes = STANDARD
         .decode(&synthesized.audio_base64)
         .map_err(|error| anyhow::anyhow!("invalid synthesized audio base64: {error}"))?;
+    let duration_ms = estimate_audio_duration_ms("mp3", &audio_bytes);
     logging::log_channel_audio_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
@@ -816,7 +817,7 @@ async fn send_english_audio_reply(
         "english-reply.mp3",
         "mp3",
         audio_bytes.len(),
-        None,
+        duration_ms,
     );
     let uploaded = api.upload_voice(account, to_user_id, &audio_bytes).await?;
     logging::log_channel_audio_reply_stage(
@@ -826,7 +827,7 @@ async fn send_english_audio_reply(
         "english-reply.mp3",
         "mp3",
         audio_bytes.len(),
-        None,
+        duration_ms,
     );
     let _message_id = api
         .send_voice_message(
@@ -834,8 +835,9 @@ async fn send_english_audio_reply(
             to_user_id,
             &uploaded,
             context_token,
+            Some(audio_bytes.len()),
             Some(sample_rate),
-            None,
+            duration_ms,
         )
         .await?;
     logging::log_channel_audio_replied(
@@ -844,7 +846,7 @@ async fn send_english_audio_reply(
         session_id,
         "english-reply.mp3",
         "mp3",
-        None,
+        duration_ms,
     );
     Ok(())
 }
@@ -891,6 +893,188 @@ fn looks_like_english_text(input: &str) -> bool {
     }
 
     latin_letters >= 12 && words >= 3 && latin_letters > cjk_chars * 2
+}
+
+fn estimate_audio_duration_ms(format: &str, bytes: &[u8]) -> Option<u64> {
+    match normalize_audio_format(format).as_str() {
+        "mp3" => estimate_mp3_duration_ms(bytes),
+        _ => None,
+    }
+}
+
+fn normalize_audio_format(format: &str) -> String {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "mpeg" => "mp3".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn estimate_mp3_duration_ms(bytes: &[u8]) -> Option<u64> {
+    let mut offset = skip_id3v2_tag(bytes)?;
+    let mut total_samples = 0u64;
+    let mut fallback_sample_rate = None::<u32>;
+
+    while offset + 4 <= bytes.len() {
+        let header = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?);
+        if (header >> 21) & 0x7ff != 0x7ff {
+            offset += 1;
+            continue;
+        }
+        let version_bits = (header >> 19) & 0x3;
+        let layer_bits = (header >> 17) & 0x3;
+        let bitrate_index = ((header >> 12) & 0xf) as usize;
+        let sample_rate_index = ((header >> 10) & 0x3) as usize;
+        let padding = ((header >> 9) & 0x1) as u32;
+
+        let Some(version) = mpeg_version(version_bits) else {
+            offset += 1;
+            continue;
+        };
+        let Some(layer) = mpeg_layer(layer_bits) else {
+            offset += 1;
+            continue;
+        };
+        let Some(sample_rate) = mp3_sample_rate(version, sample_rate_index) else {
+            offset += 1;
+            continue;
+        };
+        let Some(bitrate_kbps) = mp3_bitrate_kbps(version, layer, bitrate_index) else {
+            offset += 1;
+            continue;
+        };
+        let frame_len = mp3_frame_length_bytes(version, layer, bitrate_kbps, sample_rate, padding)?;
+        if frame_len == 0 || offset + frame_len > bytes.len() {
+            break;
+        }
+        total_samples = total_samples.saturating_add(mp3_samples_per_frame(version, layer) as u64);
+        fallback_sample_rate = Some(sample_rate);
+        offset += frame_len;
+    }
+
+    let sample_rate = fallback_sample_rate?;
+    if total_samples == 0 {
+        return None;
+    }
+    Some(((u128::from(total_samples) * 1000) / u128::from(sample_rate)) as u64)
+}
+
+fn skip_id3v2_tag(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 10 {
+        return Some(0);
+    }
+    if &bytes[..3] != b"ID3" {
+        return Some(0);
+    }
+    let size = ((usize::from(bytes[6] & 0x7f)) << 21)
+        | ((usize::from(bytes[7] & 0x7f)) << 14)
+        | ((usize::from(bytes[8] & 0x7f)) << 7)
+        | usize::from(bytes[9] & 0x7f);
+    Some(10 + size)
+}
+
+#[derive(Clone, Copy)]
+enum MpegVersion {
+    V1,
+    V2,
+    V25,
+}
+
+#[derive(Clone, Copy)]
+enum MpegLayer {
+    L1,
+    L2,
+    L3,
+}
+
+fn mpeg_version(bits: u32) -> Option<MpegVersion> {
+    match bits {
+        0 => Some(MpegVersion::V25),
+        2 => Some(MpegVersion::V2),
+        3 => Some(MpegVersion::V1),
+        _ => None,
+    }
+}
+
+fn mpeg_layer(bits: u32) -> Option<MpegLayer> {
+    match bits {
+        1 => Some(MpegLayer::L3),
+        2 => Some(MpegLayer::L2),
+        3 => Some(MpegLayer::L1),
+        _ => None,
+    }
+}
+
+fn mp3_sample_rate(version: MpegVersion, index: usize) -> Option<u32> {
+    const V1: [u32; 3] = [44_100, 48_000, 32_000];
+    const V2: [u32; 3] = [22_050, 24_000, 16_000];
+    const V25: [u32; 3] = [11_025, 12_000, 8_000];
+    let table = match version {
+        MpegVersion::V1 => &V1,
+        MpegVersion::V2 => &V2,
+        MpegVersion::V25 => &V25,
+    };
+    table.get(index).copied()
+}
+
+fn mp3_bitrate_kbps(version: MpegVersion, layer: MpegLayer, index: usize) -> Option<u32> {
+    if index == 0 || index == 15 {
+        return None;
+    }
+    const MPEG1_L1: [u32; 14] = [
+        32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
+    ];
+    const MPEG1_L2: [u32; 14] = [
+        32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+    ];
+    const MPEG1_L3: [u32; 14] = [
+        32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+    ];
+    const MPEG2_L1: [u32; 14] = [
+        32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
+    ];
+    const MPEG2_L23: [u32; 14] = [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+
+    let table = match (version, layer) {
+        (MpegVersion::V1, MpegLayer::L1) => &MPEG1_L1,
+        (MpegVersion::V1, MpegLayer::L2) => &MPEG1_L2,
+        (MpegVersion::V1, MpegLayer::L3) => &MPEG1_L3,
+        (_, MpegLayer::L1) => &MPEG2_L1,
+        (_, _) => &MPEG2_L23,
+    };
+    table.get(index - 1).copied()
+}
+
+fn mp3_frame_length_bytes(
+    version: MpegVersion,
+    layer: MpegLayer,
+    bitrate_kbps: u32,
+    sample_rate: u32,
+    padding: u32,
+) -> Option<usize> {
+    let bitrate = bitrate_kbps.checked_mul(1000)?;
+    let value = match layer {
+        MpegLayer::L1 => (((12 * bitrate) / sample_rate) + padding) * 4,
+        MpegLayer::L2 => ((144 * bitrate) / sample_rate) + padding,
+        MpegLayer::L3 => {
+            let coefficient = if matches!(version, MpegVersion::V1) {
+                144
+            } else {
+                72
+            };
+            ((coefficient * bitrate) / sample_rate) + padding
+        }
+    };
+    usize::try_from(value).ok()
+}
+
+fn mp3_samples_per_frame(version: MpegVersion, layer: MpegLayer) -> u32 {
+    match (version, layer) {
+        (_, MpegLayer::L1) => 384,
+        (MpegVersion::V1, MpegLayer::L2) => 1152,
+        (MpegVersion::V1, MpegLayer::L3) => 1152,
+        (_, MpegLayer::L2) => 1152,
+        (_, MpegLayer::L3) => 576,
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {

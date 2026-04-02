@@ -224,6 +224,8 @@ pub struct WeixinOutboundTextItem<'a> {
 pub struct WeixinOutboundVoiceItem<'a> {
     pub media: WeixinOutboundCdnMedia<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub encode_type: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bits_per_sample: Option<u8>,

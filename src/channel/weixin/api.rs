@@ -232,6 +232,7 @@ impl WeixinApiClient {
         to_user_id: &str,
         voice: &WeixinUploadedVoice,
         context_token: Option<&str>,
+        voice_size: Option<usize>,
         sample_rate: Option<u32>,
         playtime_ms: Option<u64>,
     ) -> Result<String> {
@@ -252,8 +253,9 @@ impl WeixinApiClient {
                             aes_key: &voice.aes_key,
                             encrypt_type: Some(WEIXIN_MEDIA_ENCRYPT_TYPE_PACK),
                         },
+                        voice_size,
                         encode_type: Some(WEIXIN_VOICE_ENCODE_MP3),
-                        bits_per_sample: None,
+                        bits_per_sample: Some(16),
                         sample_rate,
                         playtime: playtime_ms,
                     }),
