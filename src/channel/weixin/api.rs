@@ -208,7 +208,9 @@ impl WeixinApiClient {
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .map(|value| build_cdn_upload_url(self.config.cdn_base_url.as_str(), value))
+                    .map(|value| {
+                        build_cdn_upload_url(self.config.cdn_base_url.as_str(), value, &file_key)
+                    })
             })
             .ok_or_else(|| anyhow!("weixin getuploadurl response missing upload target"))?;
 
@@ -415,11 +417,12 @@ fn is_timeout_error(error: &anyhow::Error) -> bool {
         .is_some_and(reqwest::Error::is_timeout)
 }
 
-fn build_cdn_upload_url(cdn_base_url: &str, upload_param: &str) -> String {
+fn build_cdn_upload_url(cdn_base_url: &str, upload_param: &str, file_key: &str) -> String {
     format!(
-        "{}/upload?{}",
+        "{}/upload?{}&filekey={}",
         cdn_base_url.trim_end_matches('/'),
-        upload_param.trim()
+        upload_param.trim(),
+        urlencoding::encode(file_key)
     )
 }
 
