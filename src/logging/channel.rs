@@ -275,3 +275,45 @@ pub fn log_channel_audio_replied(
         "replied to channel audio message"
     );
 }
+
+/// 记录通道媒体回复链路中的阶段性动作。
+pub fn log_channel_media_reply_stage(
+    channel: &str,
+    message_id: &str,
+    stage: &str,
+    file_name: &str,
+    format: &str,
+    byte_len: usize,
+    duration_ms: Option<u64>,
+) {
+    info!(
+        channel = %channel,
+        message_id = %message_id,
+        stage = %stage,
+        file_name = %file_name,
+        format = %format,
+        byte_len,
+        duration_ms = ?duration_ms,
+        "requesting channel media reply"
+    );
+}
+
+/// 记录通道媒体消息已经成功回复给用户。
+pub fn log_channel_media_replied(
+    channel: &str,
+    message_id: &str,
+    session_id: &str,
+    file_name: &str,
+    format: &str,
+    duration_ms: Option<u64>,
+) {
+    info!(
+        channel = %channel,
+        message_id = %message_id,
+        session_id = %session_id,
+        file_name = %file_name,
+        format = %format,
+        duration_ms = ?duration_ms,
+        "replied to channel media message"
+    );
+}

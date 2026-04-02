@@ -1,0 +1,59 @@
+{
+  "lesson_date": "2026-04-01",
+  "generated_at_ms": 1775033972473,
+  "article": {
+    "source_url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "title": "China is trying to play peacemaker in the Iran war - will it work?",
+    "link": "https://www.bbc.com/news/articles/cze0kz7gr84o?at_medium=RSS&at_campaign=rss",
+    "summary": "It's a turnaround for Beijing, whose official response has been muted so far. Why is China stepping in now?",
+    "published_at": "Wed, 01 Apr 2026 07:16:15 GMT"
+  },
+  "headline_zh": "中国在伊朗战争中扮演和平调解者",
+  "summary_en": "China is attempting to act as a peacemaker in the Iran war, marking a significant shift from its previously muted official response. The article examines the reasons behind Beijing's decision to step in at this moment.",
+  "summary_zh": "中国正试图在伊朗战争中扮演和平调解者的角色，这标志着其官方立场从之前的低调态度发生了转变。文章探讨了北京为何选择在此时介入。",
+  "keywords": [
+    "China",
+    "Iran war",
+    "peacemaker",
+    "Beijing",
+    "diplomacy"
+  ],
+  "vocabulary": [
+    {
+      "word": "peacemaker",
+      "meaning_zh": "和平调解者，调停人",
+      "example_en": "China is trying to play peacemaker in the Iran war.",
+      "example_zh": "中国正试图在伊朗战争中扮演和平调解者的角色。"
+    },
+    {
+      "word": "muted",
+      "meaning_zh": "低调的，沉默的，温和的",
+      "example_en": "Beijing's official response has been muted so far.",
+      "example_zh": "北京的官方回应到目前为止一直比较低调。"
+    },
+    {
+      "word": "step in",
+      "meaning_zh": "介入，干预",
+      "example_en": "The article examines why China is stepping in now.",
+      "example_zh": "文章探讨了中国为何现在介入。"
+    }
+  ],
+  "example_sentences": [
+    {
+      "english": "China is attempting to act as a peacemaker in the Iran war, marking a significant shift from its previously muted official response.",
+      "chinese": "中国正试图在伊朗战争中扮演和平调解者的角色，这标志着其官方立场从之前的低调态度发生了转变。"
+    },
+    {
+      "english": "It's a turnaround for Beijing, whose official response has been muted so far.",
+      "chinese": "这对北京来说是一个转变，其官方回应到目前为止一直比较低调。"
+    }
+  ],
+  "questions": [
+    "What role is China attempting to play in the Iran war?",
+    "How would you describe Beijing's previous official response according to the article?",
+    "Why might China have decided to step in at this particular moment?"
+  ],
+  "shadowing_practice": "China is attempting to act as a peacemaker in the Iran war, marking a significant shift from its previously muted official response.",
+  "translation_practice": "这篇文章探讨了北京为何选择在此时介入的原因。",
+  "focus_sentence": "China is attempting to act as a peacemaker in the Iran war, marking a significant shift from its previously muted official response."
+}

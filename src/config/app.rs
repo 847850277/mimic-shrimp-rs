@@ -226,6 +226,8 @@ impl AppConfig {
                     .unwrap_or_else(|_| "bot".to_string()),
                 bot_type: std::env::var("WEIXIN_BOT_TYPE")
                     .unwrap_or_else(|_| "3".to_string()),
+                ffmpeg_bin: std::env::var("WEIXIN_FFMPEG_BIN")
+                    .unwrap_or_else(|_| "ffmpeg".to_string()),
                 login_timeout_ms: parse_u64_env("WEIXIN_LOGIN_TIMEOUT_MS", 480_000)
                     .with_context(|| {
                         "invalid WEIXIN_LOGIN_TIMEOUT_MS, expected integer".to_string()

@@ -14,9 +14,10 @@ pub use channel::{
     log_channel_audio_transcribed, log_channel_background_error,
     log_channel_callback_body_read_error, log_channel_callback_ingress,
     log_channel_callback_json_error, log_channel_callback_process_error,
-    log_channel_callback_processed, log_channel_message_ignored, log_channel_message_parse_error,
-    log_channel_reply_stage, log_channel_reply_success, log_channel_resource_fetch_retry,
-    log_channel_text_message_received, log_channel_text_replied,
+    log_channel_callback_processed, log_channel_media_replied, log_channel_media_reply_stage,
+    log_channel_message_ignored, log_channel_message_parse_error, log_channel_reply_stage,
+    log_channel_reply_success, log_channel_resource_fetch_retry, log_channel_text_message_received,
+    log_channel_text_replied,
 };
 pub use engine::{log_chain_step_answer, log_chain_step_ask_user, log_chain_step_tool};
 pub use http::{

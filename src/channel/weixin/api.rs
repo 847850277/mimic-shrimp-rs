@@ -18,14 +18,17 @@ use super::types::{
     WeixinAccountRecord, WeixinBaseInfo, WeixinGetUpdatesRequest, WeixinGetUpdatesResponse,
     WeixinGetUploadUrlRequest, WeixinGetUploadUrlResponse, WeixinOutboundCdnMedia,
     WeixinOutboundMessage, WeixinOutboundMessageItem, WeixinOutboundTextItem,
-    WeixinOutboundVoiceItem, WeixinQrCodeResponse, WeixinQrStatusResponse,
-    WeixinSendMessageRequest, WeixinUploadedVoice,
+    WeixinOutboundVideoItem, WeixinOutboundVoiceItem, WeixinQrCodeResponse, WeixinQrStatusResponse,
+    WeixinSendMessageRequest, WeixinUploadedVideo, WeixinUploadedVoice,
 };
 use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
 
 const DEFAULT_API_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_CDN_TIMEOUT_MS: u64 = 30_000;
+const WEIXIN_UPLOAD_MEDIA_TYPE_VIDEO: u8 = 2;
+#[allow(dead_code)]
 const WEIXIN_UPLOAD_MEDIA_TYPE_VOICE: u8 = 4;
+#[allow(dead_code)]
 const WEIXIN_VOICE_ENCODE_MP3: u8 = 7;
 const WEIXIN_MEDIA_ENCRYPT_TYPE_PACK: u8 = 1;
 
@@ -133,6 +136,7 @@ impl WeixinApiClient {
                     item_type: 1,
                     text_item: Some(WeixinOutboundTextItem { text }),
                     voice_item: None,
+                    video_item: None,
                 }],
                 context_token,
             },
@@ -151,6 +155,7 @@ impl WeixinApiClient {
     }
 
     /// 上传一段语音到微信 CDN，并返回可用于发送消息的媒体引用。
+    #[allow(dead_code)]
     pub async fn upload_voice(
         &self,
         account: &WeixinAccountRecord,
@@ -226,6 +231,7 @@ impl WeixinApiClient {
     }
 
     /// 发送一条语音消息。
+    #[allow(dead_code)]
     pub async fn send_voice_message(
         &self,
         account: &WeixinAccountRecord,
@@ -258,6 +264,129 @@ impl WeixinApiClient {
                         bits_per_sample: Some(16),
                         sample_rate,
                         playtime: playtime_ms,
+                    }),
+                    video_item: None,
+                }],
+                context_token,
+            },
+            base_info: self.base_info(),
+        };
+        let body = serde_json::to_string(&payload)?;
+        self.api_post(
+            account.base_url.as_str(),
+            "ilink/bot/sendmessage",
+            Some(account.bot_token.as_str()),
+            body,
+            DEFAULT_API_TIMEOUT_MS,
+        )
+        .await?;
+        Ok(client_id)
+    }
+
+    /// 上传一段视频到微信 CDN，并返回可用于发送视频消息的媒体引用。
+    pub async fn upload_video(
+        &self,
+        account: &WeixinAccountRecord,
+        to_user_id: &str,
+        video_bytes: &[u8],
+    ) -> Result<WeixinUploadedVideo> {
+        let aes_key = *Uuid::new_v4().as_bytes();
+        let aes_key_hex = hex_lower(&aes_key);
+        let encrypted = aes_128_ecb_pkcs7_encrypt(&aes_key, video_bytes)?;
+        let file_key = Uuid::new_v4().simple().to_string();
+        let raw_md5 = format!("{:x}", md5_compute(video_bytes));
+        let payload = WeixinGetUploadUrlRequest {
+            filekey: &file_key,
+            media_type: WEIXIN_UPLOAD_MEDIA_TYPE_VIDEO,
+            to_user_id,
+            rawsize: video_bytes.len(),
+            rawfilemd5: &raw_md5,
+            filesize: encrypted.len(),
+            no_need_thumb: true,
+            aeskey: &aes_key_hex,
+            base_info: self.base_info(),
+        };
+        let body = serde_json::to_string(&payload)?;
+        let raw = self
+            .api_post(
+                account.base_url.as_str(),
+                "ilink/bot/getuploadurl",
+                Some(account.bot_token.as_str()),
+                body,
+                DEFAULT_API_TIMEOUT_MS,
+            )
+            .await?;
+        let response: WeixinGetUploadUrlResponse = serde_json::from_str(&raw)?;
+        let ret = response.ret.unwrap_or_default();
+        let errcode = response.errcode.unwrap_or_default();
+        if ret != 0 || errcode != 0 {
+            bail!(
+                "weixin getuploadurl failed: ret={} errcode={} message={}",
+                ret,
+                errcode,
+                response
+                    .errmsg
+                    .unwrap_or_else(|| "unknown weixin upload error".to_string())
+            );
+        }
+        let upload_url = response
+            .upload_full_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                response
+                    .upload_param
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| {
+                        build_cdn_upload_url(self.config.cdn_base_url.as_str(), value, &file_key)
+                    })
+            })
+            .ok_or_else(|| anyhow!("weixin getuploadurl response missing upload target"))?;
+        let download_param = self.upload_to_cdn(upload_url.as_str(), &encrypted).await?;
+        let encrypt_query_param = download_param
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("weixin cdn upload response missing x-encrypted-param"))?;
+        Ok(WeixinUploadedVideo {
+            encrypt_query_param,
+            aes_key: STANDARD.encode(aes_key_hex.as_bytes()),
+            file_size_ciphertext: encrypted.len(),
+        })
+    }
+
+    /// 发送一条视频消息。
+    pub async fn send_video_message(
+        &self,
+        account: &WeixinAccountRecord,
+        to_user_id: &str,
+        video: &WeixinUploadedVideo,
+        context_token: Option<&str>,
+        play_length_ms: Option<u64>,
+    ) -> Result<String> {
+        let client_id = format!("mimic-shrimp-rs-{}", Uuid::new_v4());
+        let payload = WeixinSendMessageRequest {
+            msg: WeixinOutboundMessage {
+                from_user_id: "",
+                to_user_id,
+                client_id: &client_id,
+                message_type: 2,
+                message_state: 2,
+                item_list: vec![WeixinOutboundMessageItem {
+                    item_type: 5,
+                    text_item: None,
+                    voice_item: None,
+                    video_item: Some(WeixinOutboundVideoItem {
+                        media: WeixinOutboundCdnMedia {
+                            encrypt_query_param: &video.encrypt_query_param,
+                            aes_key: &video.aes_key,
+                            encrypt_type: Some(WEIXIN_MEDIA_ENCRYPT_TYPE_PACK),
+                        },
+                        video_size: video.file_size_ciphertext,
+                        play_length: play_length_ms,
                     }),
                 }],
                 context_token,
