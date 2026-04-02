@@ -216,10 +216,9 @@ impl WeixinApiClient {
 
         let download_param = self.upload_to_cdn(upload_url.as_str(), &encrypted).await?;
         let encrypt_query_param = download_param
-            .or(response.upload_param)
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("weixin cdn upload response missing encrypt query param"))?;
+            .ok_or_else(|| anyhow!("weixin cdn upload response missing x-encrypted-param"))?;
         Ok(WeixinUploadedVoice {
             encrypt_query_param,
             aes_key: STANDARD.encode(aes_key_hex.as_bytes()),
@@ -376,7 +375,7 @@ impl WeixinApiClient {
         let status = response.status();
         let encrypted_query = response
             .headers()
-            .get("X-Encryption-Query")
+            .get("x-encrypted-param")
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string)
             .filter(|value| !value.trim().is_empty());
@@ -419,9 +418,9 @@ fn is_timeout_error(error: &anyhow::Error) -> bool {
 
 fn build_cdn_upload_url(cdn_base_url: &str, upload_param: &str, file_key: &str) -> String {
     format!(
-        "{}/upload?{}&filekey={}",
+        "{}/upload?encrypted_query_param={}&filekey={}",
         cdn_base_url.trim_end_matches('/'),
-        upload_param.trim(),
+        urlencoding::encode(upload_param.trim()),
         urlencoding::encode(file_key)
     )
 }
