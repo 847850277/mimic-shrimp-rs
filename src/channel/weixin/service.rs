@@ -784,7 +784,7 @@ async fn send_english_audio_reply(
         return Ok(());
     }
 
-    let sample_rate = 24_000u32;
+    let sample_rate = 32_000u32;
     logging::log_channel_audio_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
