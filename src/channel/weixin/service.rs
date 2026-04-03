@@ -784,13 +784,15 @@ async fn send_english_file_reply(
         return Ok(());
     }
 
+    let file_name = "english-reply.wav";
+    let format = "wav";
     let sample_rate = 32_000u32;
     logging::log_channel_media_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "tts",
-        "english-reply.mp3",
-        "mp3",
+        file_name,
+        format,
         0,
         None,
     );
@@ -799,7 +801,7 @@ async fn send_english_file_reply(
             text: normalized_text,
             model: None,
             voice: None,
-            response_format: Some("mp3".to_string()),
+            response_format: Some(format.to_string()),
             sample_rate: Some(sample_rate),
             speed: None,
             gain: None,
@@ -809,13 +811,13 @@ async fn send_english_file_reply(
     let audio_bytes = STANDARD
         .decode(&synthesized.audio_base64)
         .map_err(|error| anyhow::anyhow!("invalid synthesized audio base64: {error}"))?;
-    let duration_ms = estimate_audio_duration_ms("mp3", &audio_bytes);
+    let duration_ms = estimate_audio_duration_ms(format, &audio_bytes);
     logging::log_channel_media_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "cdn_upload",
-        "english-reply.mp3",
-        "mp3",
+        file_name,
+        format,
         audio_bytes.len(),
         duration_ms,
     );
@@ -824,26 +826,20 @@ async fn send_english_file_reply(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "sendmessage",
-        "english-reply.mp3",
-        "mp3",
+        file_name,
+        format,
         audio_bytes.len(),
         duration_ms,
     );
     let _message_id = api
-        .send_file_message(
-            account,
-            to_user_id,
-            "english-reply.mp3",
-            &uploaded,
-            context_token,
-        )
+        .send_file_message(account, to_user_id, file_name, &uploaded, context_token)
         .await?;
     logging::log_channel_media_replied(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         session_id,
-        "english-reply.mp3",
-        "mp3",
+        file_name,
+        format,
         duration_ms,
     );
     Ok(())
@@ -896,6 +892,7 @@ fn looks_like_english_text(input: &str) -> bool {
 fn estimate_audio_duration_ms(format: &str, bytes: &[u8]) -> Option<u64> {
     match normalize_audio_format(format).as_str() {
         "mp3" => estimate_mp3_duration_ms(bytes),
+        "wav" => estimate_wav_duration_ms(bytes),
         _ => None,
     }
 }
@@ -903,8 +900,21 @@ fn estimate_audio_duration_ms(format: &str, bytes: &[u8]) -> Option<u64> {
 fn normalize_audio_format(format: &str) -> String {
     match format.trim().to_ascii_lowercase().as_str() {
         "mpeg" => "mp3".to_string(),
+        "wave" | "x-wav" => "wav".to_string(),
         other => other.to_string(),
     }
+}
+
+fn estimate_wav_duration_ms(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let byte_rate = u32::from_le_bytes(bytes[28..32].try_into().ok()?);
+    let data_size = u32::from_le_bytes(bytes[40..44].try_into().ok()?);
+    if byte_rate == 0 {
+        return None;
+    }
+    Some(((u128::from(data_size) * 1000) / u128::from(byte_rate)) as u64)
 }
 
 fn estimate_mp3_duration_ms(bytes: &[u8]) -> Option<u64> {
