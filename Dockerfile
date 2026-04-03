@@ -29,7 +29,7 @@ RUN find src -type f -exec touch {} + \
 FROM ${RUNTIME_IMAGE} AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -43,7 +43,6 @@ RUN mkdir -p /app/learning_data \
 ENV APP_NAME=mimic-shrimp-rs
 ENV SERVER_ADDR=0.0.0.0:7878
 ENV RUST_LOG=info
-ENV WEIXIN_FFMPEG_BIN=/usr/bin/ffmpeg
 
 EXPOSE 7878
 

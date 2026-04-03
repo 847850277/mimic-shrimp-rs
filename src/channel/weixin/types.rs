@@ -212,7 +212,7 @@ pub struct WeixinOutboundMessageItem<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice_item: Option<WeixinOutboundVoiceItem<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub video_item: Option<WeixinOutboundVideoItem<'a>>,
+    pub file_item: Option<WeixinOutboundFileItem<'a>>,
 }
 
 /// 发送文本消息时的 text_item。
@@ -237,13 +237,16 @@ pub struct WeixinOutboundVoiceItem<'a> {
     pub playtime: Option<u64>,
 }
 
-/// 发送视频消息时的 video_item。
+/// 发送文件消息时的 file_item。
 #[derive(Debug, Serialize)]
-pub struct WeixinOutboundVideoItem<'a> {
+pub struct WeixinOutboundFileItem<'a> {
     pub media: WeixinOutboundCdnMedia<'a>,
-    pub video_size: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub play_length: Option<u64>,
+    pub file_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub md5: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub len: Option<&'a str>,
 }
 
 /// CDN 媒体引用。
@@ -263,12 +266,12 @@ pub struct WeixinUploadedVoice {
     pub aes_key: String,
 }
 
-/// 上传后可发送的视频媒体结果。
+/// 上传后可发送的文件媒体结果。
 #[derive(Debug, Clone)]
-pub struct WeixinUploadedVideo {
+pub struct WeixinUploadedFile {
     pub encrypt_query_param: String,
     pub aes_key: String,
-    pub file_size_ciphertext: usize,
+    pub file_size: usize,
 }
 
 /// 登录中的二维码会话。

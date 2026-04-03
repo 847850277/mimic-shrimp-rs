@@ -17,15 +17,15 @@ use crate::config::WeixinChannelConfig;
 use super::types::{
     WeixinAccountRecord, WeixinBaseInfo, WeixinGetUpdatesRequest, WeixinGetUpdatesResponse,
     WeixinGetUploadUrlRequest, WeixinGetUploadUrlResponse, WeixinOutboundCdnMedia,
-    WeixinOutboundMessage, WeixinOutboundMessageItem, WeixinOutboundTextItem,
-    WeixinOutboundVideoItem, WeixinOutboundVoiceItem, WeixinQrCodeResponse, WeixinQrStatusResponse,
-    WeixinSendMessageRequest, WeixinUploadedVideo, WeixinUploadedVoice,
+    WeixinOutboundFileItem, WeixinOutboundMessage, WeixinOutboundMessageItem,
+    WeixinOutboundTextItem, WeixinOutboundVoiceItem, WeixinQrCodeResponse, WeixinQrStatusResponse,
+    WeixinSendMessageRequest, WeixinUploadedFile, WeixinUploadedVoice,
 };
 use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
 
 const DEFAULT_API_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_CDN_TIMEOUT_MS: u64 = 30_000;
-const WEIXIN_UPLOAD_MEDIA_TYPE_VIDEO: u8 = 2;
+const WEIXIN_UPLOAD_MEDIA_TYPE_FILE: u8 = 3;
 #[allow(dead_code)]
 const WEIXIN_UPLOAD_MEDIA_TYPE_VOICE: u8 = 4;
 #[allow(dead_code)]
@@ -136,7 +136,7 @@ impl WeixinApiClient {
                     item_type: 1,
                     text_item: Some(WeixinOutboundTextItem { text }),
                     voice_item: None,
-                    video_item: None,
+                    file_item: None,
                 }],
                 context_token,
             },
@@ -265,7 +265,7 @@ impl WeixinApiClient {
                         sample_rate,
                         playtime: playtime_ms,
                     }),
-                    video_item: None,
+                    file_item: None,
                 }],
                 context_token,
             },
@@ -283,23 +283,23 @@ impl WeixinApiClient {
         Ok(client_id)
     }
 
-    /// 上传一段视频到微信 CDN，并返回可用于发送视频消息的媒体引用。
-    pub async fn upload_video(
+    /// 上传一个文件附件到微信 CDN，并返回可用于发送文件消息的媒体引用。
+    pub async fn upload_file(
         &self,
         account: &WeixinAccountRecord,
         to_user_id: &str,
-        video_bytes: &[u8],
-    ) -> Result<WeixinUploadedVideo> {
+        file_bytes: &[u8],
+    ) -> Result<WeixinUploadedFile> {
         let aes_key = *Uuid::new_v4().as_bytes();
         let aes_key_hex = hex_lower(&aes_key);
-        let encrypted = aes_128_ecb_pkcs7_encrypt(&aes_key, video_bytes)?;
+        let encrypted = aes_128_ecb_pkcs7_encrypt(&aes_key, file_bytes)?;
         let file_key = Uuid::new_v4().simple().to_string();
-        let raw_md5 = format!("{:x}", md5_compute(video_bytes));
+        let raw_md5 = format!("{:x}", md5_compute(file_bytes));
         let payload = WeixinGetUploadUrlRequest {
             filekey: &file_key,
-            media_type: WEIXIN_UPLOAD_MEDIA_TYPE_VIDEO,
+            media_type: WEIXIN_UPLOAD_MEDIA_TYPE_FILE,
             to_user_id,
-            rawsize: video_bytes.len(),
+            rawsize: file_bytes.len(),
             rawfilemd5: &raw_md5,
             filesize: encrypted.len(),
             no_need_thumb: true,
@@ -351,23 +351,24 @@ impl WeixinApiClient {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("weixin cdn upload response missing x-encrypted-param"))?;
-        Ok(WeixinUploadedVideo {
+        Ok(WeixinUploadedFile {
             encrypt_query_param,
             aes_key: STANDARD.encode(aes_key_hex.as_bytes()),
-            file_size_ciphertext: encrypted.len(),
+            file_size: file_bytes.len(),
         })
     }
 
-    /// 发送一条视频消息。
-    pub async fn send_video_message(
+    /// 发送一条文件消息。
+    pub async fn send_file_message(
         &self,
         account: &WeixinAccountRecord,
         to_user_id: &str,
-        video: &WeixinUploadedVideo,
+        file_name: &str,
+        file: &WeixinUploadedFile,
         context_token: Option<&str>,
-        play_length_ms: Option<u64>,
     ) -> Result<String> {
         let client_id = format!("mimic-shrimp-rs-{}", Uuid::new_v4());
+        let file_len = file.file_size.to_string();
         let payload = WeixinSendMessageRequest {
             msg: WeixinOutboundMessage {
                 from_user_id: "",
@@ -376,17 +377,18 @@ impl WeixinApiClient {
                 message_type: 2,
                 message_state: 2,
                 item_list: vec![WeixinOutboundMessageItem {
-                    item_type: 5,
+                    item_type: 4,
                     text_item: None,
                     voice_item: None,
-                    video_item: Some(WeixinOutboundVideoItem {
+                    file_item: Some(WeixinOutboundFileItem {
                         media: WeixinOutboundCdnMedia {
-                            encrypt_query_param: &video.encrypt_query_param,
-                            aes_key: &video.aes_key,
+                            encrypt_query_param: &file.encrypt_query_param,
+                            aes_key: &file.aes_key,
                             encrypt_type: Some(WEIXIN_MEDIA_ENCRYPT_TYPE_PACK),
                         },
-                        video_size: video.file_size_ciphertext,
-                        play_length: play_length_ms,
+                        file_name: Some(file_name),
+                        md5: None,
+                        len: Some(file_len.as_str()),
                     }),
                 }],
                 context_token,

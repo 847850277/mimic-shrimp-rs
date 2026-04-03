@@ -2,9 +2,6 @@
 
 use std::{
     collections::HashMap,
-    env::temp_dir,
-    ffi::OsString,
-    path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -13,8 +10,6 @@ use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::{
-    fs,
-    process::Command,
     sync::{Mutex, RwLock},
     task::JoinHandle,
     time::{Duration, sleep},
@@ -418,7 +413,7 @@ impl WeixinManager {
             && should_send_english_media_reply(&inbound.text, &answer)
         {
             if let Err(error) = self
-                .send_english_video_reply(
+                .send_english_file_reply(
                     account,
                     from_user_id,
                     &inbound.message_id,
@@ -430,7 +425,7 @@ impl WeixinManager {
             {
                 logging::log_channel_background_error(
                     inbound.channel.as_str(),
-                    &format!("failed to send synthesized weixin audio reply: {error}"),
+                    &format!("failed to send synthesized weixin file reply: {error}"),
                 );
             }
         }
@@ -639,7 +634,7 @@ impl WeixinManager {
         })
     }
 
-    async fn send_english_video_reply(
+    async fn send_english_file_reply(
         &self,
         account: &WeixinAccountRecord,
         to_user_id: &str,
@@ -648,10 +643,9 @@ impl WeixinManager {
         text: &str,
         context_token: Option<&str>,
     ) -> Result<()> {
-        send_english_video_reply(
+        send_english_file_reply(
             self.inner.capabilities.speech_synthesis(),
             self.api(),
-            self.config().ffmpeg_bin.as_str(),
             account,
             to_user_id,
             reply_to_message_id,
@@ -775,10 +769,9 @@ async fn build_audio_reply(
     }
 }
 
-async fn send_english_video_reply(
+async fn send_english_file_reply(
     speech_synthesis: &SpeechSynthesisCapability,
     api: &WeixinApiClient,
-    ffmpeg_bin: &str,
     account: &WeixinAccountRecord,
     to_user_id: &str,
     reply_to_message_id: &str,
@@ -796,8 +789,8 @@ async fn send_english_video_reply(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "tts",
-        "english-reply.mp4",
-        "mp4",
+        "english-reply.mp3",
+        "mp3",
         0,
         None,
     );
@@ -820,42 +813,37 @@ async fn send_english_video_reply(
     logging::log_channel_media_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
-        "render_video",
-        "english-reply.mp4",
-        "mp4",
+        "cdn_upload",
+        "english-reply.mp3",
+        "mp3",
         audio_bytes.len(),
         duration_ms,
     );
-    let video_bytes =
-        render_audio_as_black_video(ffmpeg_bin, &audio_bytes, "mp3", duration_ms).await?;
-    logging::log_channel_media_reply_stage(
-        ChannelKind::Weixin.as_str(),
-        reply_to_message_id,
-        "cdn_upload",
-        "english-reply.mp4",
-        "mp4",
-        video_bytes.len(),
-        duration_ms,
-    );
-    let uploaded = api.upload_video(account, to_user_id, &video_bytes).await?;
+    let uploaded = api.upload_file(account, to_user_id, &audio_bytes).await?;
     logging::log_channel_media_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "sendmessage",
-        "english-reply.mp4",
-        "mp4",
-        video_bytes.len(),
+        "english-reply.mp3",
+        "mp3",
+        audio_bytes.len(),
         duration_ms,
     );
     let _message_id = api
-        .send_video_message(account, to_user_id, &uploaded, context_token, duration_ms)
+        .send_file_message(
+            account,
+            to_user_id,
+            "english-reply.mp3",
+            &uploaded,
+            context_token,
+        )
         .await?;
     logging::log_channel_media_replied(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         session_id,
-        "english-reply.mp4",
-        "mp4",
+        "english-reply.mp3",
+        "mp3",
         duration_ms,
     );
     Ok(())
@@ -864,87 +852,6 @@ async fn send_english_video_reply(
 fn should_send_english_media_reply(transcript: &str, answer: &str) -> bool {
     looks_like_english_text(transcript)
         && looks_like_english_text(&normalize_text_for_speech(answer))
-}
-
-async fn render_audio_as_black_video(
-    ffmpeg_bin: &str,
-    audio_bytes: &[u8],
-    audio_extension: &str,
-    duration_ms: Option<u64>,
-) -> Result<Vec<u8>> {
-    let temp_dir = temp_dir().join(format!("mimic-shrimp-weixin-video-{}", Uuid::new_v4()));
-    fs::create_dir_all(&temp_dir).await?;
-    let input_path = temp_dir.join(format!("input.{audio_extension}"));
-    let output_path = temp_dir.join("output.mp4");
-    fs::write(&input_path, audio_bytes).await?;
-
-    let status = Command::new(ffmpeg_bin)
-        .args([
-            OsString::from("-hide_banner"),
-            OsString::from("-loglevel"),
-            OsString::from("error"),
-            OsString::from("-y"),
-            OsString::from("-f"),
-            OsString::from("lavfi"),
-            OsString::from("-i"),
-            OsString::from("color=c=black:s=720x720:r=25"),
-            OsString::from("-i"),
-            input_path.as_os_str().to_os_string(),
-            OsString::from("-shortest"),
-            OsString::from("-c:v"),
-            OsString::from("libx264"),
-            OsString::from("-preset"),
-            OsString::from("veryfast"),
-            OsString::from("-pix_fmt"),
-            OsString::from("yuv420p"),
-            OsString::from("-c:a"),
-            OsString::from("aac"),
-            OsString::from("-b:a"),
-            OsString::from("128k"),
-            OsString::from("-movflags"),
-            OsString::from("+faststart"),
-            output_path.as_os_str().to_os_string(),
-        ])
-        .output()
-        .await
-        .map_err(|error| anyhow!("failed to launch ffmpeg ({ffmpeg_bin}): {error}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        let stdout = String::from_utf8_lossy(&status.stdout);
-        let _ = cleanup_temp_artifacts(&temp_dir).await;
-        return Err(anyhow!(
-            "ffmpeg failed to render black video: status={} stderr={} stdout={}",
-            status.status,
-            stderr.trim(),
-            stdout.trim()
-        ));
-    }
-
-    let video_bytes = fs::read(&output_path).await.map_err(|error| {
-        anyhow!(
-            "ffmpeg rendered video but failed to read output {}: {error}",
-            output_path.display()
-        )
-    })?;
-    let _ = cleanup_temp_artifacts(&temp_dir).await;
-
-    if video_bytes.is_empty() {
-        return Err(anyhow!(
-            "ffmpeg rendered an empty mp4 output{}",
-            duration_ms
-                .map(|value| format!(" for duration {} ms", value))
-                .unwrap_or_default()
-        ));
-    }
-    Ok(video_bytes)
-}
-
-async fn cleanup_temp_artifacts(temp_dir: &PathBuf) -> Result<()> {
-    if fs::try_exists(temp_dir).await.unwrap_or(false) {
-        fs::remove_dir_all(temp_dir).await?;
-    }
-    Ok(())
 }
 
 fn normalize_text_for_speech(input: &str) -> String {

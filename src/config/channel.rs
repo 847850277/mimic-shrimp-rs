@@ -26,7 +26,6 @@ pub struct WeixinChannelConfig {
     pub route_tag: Option<String>,
     pub ilink_app_id: String,
     pub bot_type: String,
-    pub ffmpeg_bin: String,
     pub login_timeout_ms: u64,
     pub long_poll_timeout_ms: u64,
     pub retry_delay_ms: u64,
