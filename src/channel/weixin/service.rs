@@ -784,14 +784,14 @@ async fn send_english_file_reply(
         return Ok(());
     }
 
-    let file_name = "english-reply.wav";
+    let file_name = format!("english-reply-{}.wav", now_ms());
     let format = "wav";
     let sample_rate = 32_000u32;
     logging::log_channel_media_reply_stage(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "tts",
-        file_name,
+        &file_name,
         format,
         0,
         None,
@@ -816,7 +816,7 @@ async fn send_english_file_reply(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "cdn_upload",
-        file_name,
+        &file_name,
         format,
         audio_bytes.len(),
         duration_ms,
@@ -826,19 +826,19 @@ async fn send_english_file_reply(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         "sendmessage",
-        file_name,
+        &file_name,
         format,
         audio_bytes.len(),
         duration_ms,
     );
     let _message_id = api
-        .send_file_message(account, to_user_id, file_name, &uploaded, context_token)
+        .send_file_message(account, to_user_id, &file_name, &uploaded, context_token)
         .await?;
     logging::log_channel_media_replied(
         ChannelKind::Weixin.as_str(),
         reply_to_message_id,
         session_id,
-        file_name,
+        &file_name,
         format,
         duration_ms,
     );
